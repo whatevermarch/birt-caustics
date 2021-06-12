@@ -6,19 +6,22 @@ struct DLightInput
 {
     struct CameraGBuffer
     {
-        static const uint32_t numImageViews = 4;
+        static const uint32_t numImageViews = 5;
 
         VkImageView worldCoord,
             normal,
             diffuse,
-            specular;
+            specular,
+            emissive;
     };
 
     struct LightGBuffer
     {
-        static const uint32_t numImageViews = 1;
+        static const uint32_t numImageViews = 3;
 
-        VkImageView depth;
+        VkImageView depthTransparent,
+            stencilTransparent,
+            depthOpaque;
     };
 };
 
@@ -30,12 +33,6 @@ public:
     //  return true if it consists of depth attachment (at the end of the list)
     static bool getAttachmentDesc(
         std::vector<VkAttachmentDescription>& attachments);
-
-    struct per_frame
-    {
-        XMVECTOR cameraPos;
-        Light light;
-    };
 
     void OnCreate(
         Device* pDevice,
@@ -52,9 +49,7 @@ public:
     void setCameraGBuffer(DLightInput::CameraGBuffer* pCamSRVs);
     void setLightGBuffer(DLightInput::LightGBuffer* pLightSRVs);
 
-    DirectLighting::per_frame* SetPerFrameConstants();
-
-    void Draw(VkCommandBuffer commandBuffer, VkRect2D* renderArea);
+    void Draw(VkCommandBuffer commandBuffer, VkRect2D* renderArea, VkDescriptorBufferInfo* perFrameDesc);
 
 protected:
 
@@ -65,7 +60,6 @@ protected:
     DynamicBufferRing* pDynamicBufferRing = nullptr;
     StaticBufferPool* pStaticBufferPool = nullptr;
 
-    DirectLighting::per_frame perFrame;
     VkDescriptorBufferInfo descInfo_perFrame;
     VkSampler sampler_shadow;
 

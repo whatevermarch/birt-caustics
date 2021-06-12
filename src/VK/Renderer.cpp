@@ -7,7 +7,7 @@
 static const int backBufferCount = 3;
 
 //  Shadow map size (the texture dimension is shadowmapSize * shadowmapSize)
-static const uint32_t shadowmapSize = 1024;
+static const uint32_t shadowmapSize = 512;
 
 void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 {
@@ -52,22 +52,51 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
             &this->resViewHeaps,
             {
                 //  RSM
-                { GBUFFER_DEPTH, VK_FORMAT_D32_SFLOAT},
+                { GBUFFER_DEPTH, VK_FORMAT_D32_SFLOAT_S8_UINT},
                 { GBUFFER_WORLD_COORD, VK_FORMAT_R16G16B16A16_SFLOAT},
                 { GBUFFER_NORMAL_BUFFER, VK_FORMAT_R16G16B16A16_SFLOAT},
-                { GBUFFER_DIFFUSE, VK_FORMAT_R16G16B16A16_SFLOAT}, // represent flux map
-                { GBUFFER_SPECULAR_ROUGHNESS, VK_FORMAT_R16G16B16A16_SFLOAT},
+                { GBUFFER_SPECULAR_ROUGHNESS, VK_FORMAT_R16G16B16A16_UNORM},
+                { GBUFFER_EMISSIVE_FLUX, VK_FORMAT_R8G8B8A8_UNORM},
             },
             1
             );
         GBufferFlags fullRSM = GBUFFER_DEPTH |
             GBUFFER_WORLD_COORD | GBUFFER_NORMAL_BUFFER |
-            GBUFFER_DIFFUSE | GBUFFER_SPECULAR_ROUGHNESS;
-        this->rp_RSM_full.OnCreate(this->pRSM, fullRSM, true, "RSM RenderPass");
+            GBUFFER_SPECULAR_ROUGHNESS | GBUFFER_EMISSIVE_FLUX;
+        this->rp_RSM_opaq.OnCreate(this->pRSM, fullRSM, true, "RSM RenderPass (Opaque)");
+        this->rp_RSM_trans.OnCreate(this->pRSM, fullRSM, false, "RSM RenderPass (Transparent)");
 
         //  init data immediately since they don't depend on window size
         this->pRSM->OnCreateWindowSizeDependentResources(pSwapChain, totalRSMSize, totalRSMSize);
-        this->rp_RSM_full.OnCreateWindowSizeDependentResources(totalRSMSize, totalRSMSize);
+        this->rp_RSM_opaq.OnCreateWindowSizeDependentResources(totalRSMSize, totalRSMSize);
+        this->rp_RSM_trans.OnCreateWindowSizeDependentResources(totalRSMSize, totalRSMSize);
+
+        //  init cache
+        this->cache_rsmDepth.InitDepthStencil(this->pDevice, totalRSMSize, totalRSMSize, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, "RSM Depth Cache");
+        {
+            VkImageMemoryBarrier use_barrier = {};
+            use_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            use_barrier.srcAccessMask = 0;
+            use_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            use_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            use_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            use_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            use_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            use_barrier.subresourceRange.baseMipLevel = 0;
+            use_barrier.subresourceRange.levelCount = 1;
+            use_barrier.subresourceRange.baseArrayLayer = 0;
+            use_barrier.subresourceRange.layerCount = 1;
+            use_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+            use_barrier.image = this->cache_rsmDepth.Resource();
+
+            vkCmdPipelineBarrier(this->uploadHeap.GetCommandList(),
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+                0, 0, NULL, 0, NULL, 1, &use_barrier);
+
+            this->uploadHeap.FlushAndFinish();
+        }
+        this->cache_rsmDepth.CreateSRV(&cache_rsmDepthSRV);
     }
 	//	pass 1.2 : G-buffer
     {
@@ -76,22 +105,25 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
             &this->resViewHeaps,
             {
                 //  g-buffer
-                { GBUFFER_DEPTH, VK_FORMAT_D32_SFLOAT},
+                { GBUFFER_DEPTH, VK_FORMAT_D32_SFLOAT_S8_UINT},
                 { GBUFFER_WORLD_COORD, VK_FORMAT_R16G16B16A16_SFLOAT},
                 { GBUFFER_NORMAL_BUFFER, VK_FORMAT_R16G16B16A16_SFLOAT},
-                { GBUFFER_DIFFUSE, VK_FORMAT_R16G16B16A16_SFLOAT},
-                { GBUFFER_SPECULAR_ROUGHNESS, VK_FORMAT_R16G16B16A16_SFLOAT},
+                { GBUFFER_DIFFUSE, VK_FORMAT_R16G16B16A16_UNORM},
+                { GBUFFER_SPECULAR_ROUGHNESS, VK_FORMAT_R16G16B16A16_UNORM},
+                { GBUFFER_EMISSIVE_FLUX, VK_FORMAT_R8G8B8A8_UNORM},
                 { GBUFFER_MOTION_VECTORS, VK_FORMAT_R16G16_SFLOAT},
                 //  final rt
-                { GBUFFER_FORWARD, VK_FORMAT_R16G16B16A16_SFLOAT},
+                { GBUFFER_FORWARD, VK_FORMAT_R16G16B16A16_UNORM},
             },
             1
         );
         GBufferFlags fullGBuffer = GBUFFER_DEPTH | 
             GBUFFER_WORLD_COORD | GBUFFER_NORMAL_BUFFER | 
             GBUFFER_DIFFUSE | GBUFFER_SPECULAR_ROUGHNESS | 
-            GBUFFER_MOTION_VECTORS;
-        this->rp_gBuffer_full.OnCreate(this->pGBuffer, fullGBuffer, true, "G-Buffer RenderPass");
+            GBUFFER_EMISSIVE_FLUX | GBUFFER_MOTION_VECTORS;
+        this->rp_gBuffer_opaq.OnCreate(this->pGBuffer, fullGBuffer, true, "G-Buffer RenderPass (Opaque)");
+        this->rp_gBuffer_trans.OnCreate(this->pGBuffer, fullGBuffer, false, "G-Buffer RenderPass (Transparent)");
+
         this->rp_skyDome.OnCreate(this->pGBuffer, GBUFFER_FORWARD, true, "SkyDome RenderPass");
     }
     //  pass 2.1 : D-Light
@@ -105,12 +137,14 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
         );
 
         DLightInput::LightGBuffer lightGB;
-        lightGB.depth = this->pRSM->m_DepthBufferSRV;
+        lightGB.depthTransparent = this->pRSM->m_DepthBufferSRV;
+        lightGB.stencilTransparent = this->pRSM->m_StencilBufferSRV;
+        lightGB.depthOpaque = this->cache_rsmDepthSRV;
         this->dLighting->setLightGBuffer(&lightGB);
     }
     //  pass 2.2 : I-Light
     {
-        this->iLighting = new IndirectLighting();
+        /*this->iLighting = new IndirectLighting();
         this->iLighting->OnCreate(this->pDevice,
             &this->uploadHeap,
             &this->resViewHeaps,
@@ -121,8 +155,8 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
         ILightInput::LightGBuffer lightGB;
         lightGB.worldCoord = this->pRSM->m_WorldCoordSRV;
         lightGB.normal = this->pRSM->m_NormalBufferSRV;
-        lightGB.flux = this->pRSM->m_DiffuseSRV;
-        this->iLighting->setLightGBuffer(&lightGB);
+        lightGB.flux = this->pRSM->m_EmissiveFluxSRV;
+        this->iLighting->setLightGBuffer(&lightGB);*/
     }
 
     //  skydome
@@ -141,7 +175,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     }
 
     //  initialize post-processing handles
-    this->aggregator.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing);
+    //this->aggregator.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing);
     this->toneMapping.OnCreate(this->pDevice, pSwapChain->GetRenderPass(), 
         &this->resViewHeaps, &this->sBufferPool, &this->dBufferRing);
     this->tAA.OnCreate(this->pDevice, &this->resViewHeaps, &this->sBufferPool, &this->dBufferRing);
@@ -160,28 +194,35 @@ void Renderer::OnDestroy()
 
     this->tAA.OnDestroy();
     this->toneMapping.OnDestroy();
-    this->aggregator.OnDestroy();
+    //this->aggregator.OnDestroy();
 
     this->skyDomeProc.OnDestroy();
     /*this->skyDome.OnDestroy();*/
     this->rp_skyDome.OnDestroy();
 
-    this->iLighting->OnDestroy();
+    /*this->iLighting->OnDestroy();
     delete this->iLighting;
-    this->iLighting = nullptr;
+    this->iLighting = nullptr;*/
 
     this->dLighting->OnDestroy();
     delete this->dLighting;
     this->dLighting = nullptr;
 
-    this->rp_gBuffer_full.OnDestroy();
+    this->rp_gBuffer_trans.OnDestroy();
+    this->rp_gBuffer_opaq.OnDestroy();
     this->pGBuffer->OnDestroy();
     delete this->pGBuffer;
     this->pGBuffer = nullptr;
 
-    this->rp_RSM_full.OnDestroyWindowSizeDependentResources();
+    vkDestroyImageView(this->pDevice->GetDevice(), cache_rsmDepthSRV, nullptr);
+    this->cache_rsmDepthSRV = VK_NULL_HANDLE;
+    this->cache_rsmDepth.OnDestroy();
+
+    this->rp_RSM_trans.OnDestroyWindowSizeDependentResources();
+    this->rp_RSM_opaq.OnDestroyWindowSizeDependentResources();
     this->pRSM->OnDestroyWindowSizeDependentResources();
-    this->rp_RSM_full.OnDestroy();
+    this->rp_RSM_trans.OnDestroy();
+    this->rp_RSM_opaq.OnDestroy();
     this->pRSM->OnDestroy();
     delete this->pRSM;
     this->pRSM = nullptr;
@@ -214,7 +255,8 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
     this->rectScissor.offset.y = 0;
 
     this->pGBuffer->OnCreateWindowSizeDependentResources(pSwapChain, Width, Height);
-    this->rp_gBuffer_full.OnCreateWindowSizeDependentResources(Width, Height);
+    this->rp_gBuffer_opaq.OnCreateWindowSizeDependentResources(Width, Height);
+    this->rp_gBuffer_trans.OnCreateWindowSizeDependentResources(Width, Height);
     this->rp_skyDome.OnCreateWindowSizeDependentResources(Width, Height);
 
     this->dLighting->OnCreateWindowSizeDependentResources(Width, Height, this->pGBuffer);
@@ -224,22 +266,23 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
         camGB.normal = this->pGBuffer->m_NormalBufferSRV;
         camGB.diffuse = this->pGBuffer->m_DiffuseSRV;
         camGB.specular = this->pGBuffer->m_SpecularRoughnessSRV;
+        camGB.emissive = this->pGBuffer->m_EmissiveFluxSRV;
         this->dLighting->setCameraGBuffer(&camGB);
     }
 
-    this->iLighting->OnCreateWindowSizeDependentResources(Width / 2, Height / 2);
+    /*this->iLighting->OnCreateWindowSizeDependentResources(Width / 2, Height / 2);
     {
         ILightInput::CameraGBuffer camGB;
         camGB.worldCoord = this->pGBuffer->m_WorldCoordSRV;
         camGB.normal = this->pGBuffer->m_NormalBufferSRV;
         this->iLighting->setCameraGBuffer(&camGB);
-    }
+    }*/
 
-    this->aggregator.setInputImages(
+    /*this->aggregator.setInputImages(
         this->pGBuffer->m_HDRSRV,
         this->iLighting->srv_output,
         Width, Height
-    );
+    );*/
 
     this->tAA.OnCreateWindowSizeDependentResources(Width, Height, this->pGBuffer);
     this->toneMapping.UpdatePipelines(pSwapChain->GetRenderPass());
@@ -251,11 +294,12 @@ void Renderer::OnDestroyWindowSizeDependentResources()
 {
     this->tAA.OnDestroyWindowSizeDependentResources();
 
-    this->iLighting->OnDestroyWindowSizeDependentResources();
+    //this->iLighting->OnDestroyWindowSizeDependentResources();
     this->dLighting->OnDestroyWindowSizeDependentResources();
 
     this->rp_skyDome.OnDestroyWindowSizeDependentResources();
-    this->rp_gBuffer_full.OnDestroyWindowSizeDependentResources();
+    this->rp_gBuffer_trans.OnDestroyWindowSizeDependentResources();
+    this->rp_gBuffer_opaq.OnDestroyWindowSizeDependentResources();
     this->pGBuffer->OnDestroyWindowSizeDependentResources();
 }
 
@@ -287,9 +331,6 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         //  set camera
         pPerFrameData = this->res_scene->m_pGLTFCommon->SetPerFrameData(*pCamera);
 
-        //  disable RSM write
-        pPerFrameData->rsmLightIndex = -1;
-
         //  set light properties
         pPerFrameData->iblFactor = 0.36f;
         pPerFrameData->emmisiveFactor = 1.f;
@@ -299,6 +340,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         //  setup light render target
         int lightIndex = 0;
         pPerFrameData->lights[lightIndex].shadowMapIndex = 0;
+        pPerFrameData->lights[lightIndex].intensity = 8.5f; // just to try
         if (pPerFrameData->lights[lightIndex].type == LightType_Directional)
         {
             pPerFrameData->lights[lightIndex].depthBias = 100.0f / 100000.0f;
@@ -311,7 +353,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
             pPerFrameData->lights[lightIndex].shadowMapIndex = -1;
         
         this->res_scene->SetPerFrameConstants();
-        //this->res_scene->SetSkinningMatricesForSkeletons();
+        this->res_scene->SetSkinningMatricesForSkeletons();
     }
 
     //  render skydome as foundation
@@ -321,13 +363,13 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
 
         SkyDomeProc::Constants skyDomeConstants;
         skyDomeConstants.invViewProj = XMMatrixInverse(NULL, pPerFrameData->mCameraCurrViewProj);
-        skyDomeConstants.vSunDirection = pState->sunDir;
+        skyDomeConstants.vSunDirection = XMVectorSet(1.0f, 0.05f, 0.0f, 0.0f); //pState->sunDir;
         skyDomeConstants.turbidity = 10.0f;
         skyDomeConstants.rayleigh = 2.0f;
         skyDomeConstants.mieCoefficient = 0.005f;
         skyDomeConstants.mieDirectionalG = 0.8f;
         skyDomeConstants.luminance = 1.0f;
-        skyDomeConstants.sun = true; // ToDo : try false and see difference
+        skyDomeConstants.sun = false; // ToDo : try false and see difference
         this->skyDomeProc.Draw(cmdBuf1, skyDomeConstants);
 
         this->rp_skyDome.EndPass(cmdBuf1);
@@ -337,47 +379,42 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     std::vector<BatchList> opaques, transparents;
     bool gBufReady = false, rsmReady = false;
 
-    //  pass 1.1 : G-Buffer / main pass
+    //  pass 1.1 : G-Buffer (opaque)
     if(this->pGltfPbrPass && pPerFrameData)
     {
         //  retrieve render batch lists of separated opaque meshes and transparent meshes
-        this->pGltfPbrPass->BuildBatchLists(&opaques, &transparents);
+        opaques.clear();
+        this->pGltfPbrPass->BuildBatchLists(&opaques, NULL);
 
         //  determine render area
         VkRect2D rectScissor_GBuffer = this->rectScissor;
 
         //  render scene (opaque objects)
-        //  ToDo : render scene (transparent objects)
+        this->rp_gBuffer_opaq.BeginPass(cmdBuf1, rectScissor_GBuffer);
         {
-            this->rp_gBuffer_full.BeginPass(cmdBuf1, rectScissor_GBuffer);
-
+            vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 1); // need class design
             this->pGltfPbrPass->DrawBatchList(cmdBuf1, &opaques);
-
-            this->rp_gBuffer_full.EndPass(cmdBuf1);
         }
+        this->rp_gBuffer_opaq.EndPass(cmdBuf1);
 
         gBufReady = true;
     }
 
-    //  Pass 1.2 : reflective shadow map
+    //  setup each RSM quarter
+    const uint32_t viewportOffsetsX[4] = { 0, 1, 0, 1 };
+    const uint32_t viewportOffsetsY[4] = { 0, 0, 1, 1 };
+    const uint32_t viewportWidth = shadowmapSize;
+    const uint32_t viewportHeight = shadowmapSize;
+
+    //  Pass 1.2-O : reflective shadow map (opaque)
     if (this->pRSMPass && pPerFrameData)
     {
-        //  setup each RSM quarter
-        const uint32_t viewportOffsetsX[4] = { 0, 1, 0, 1 };
-        const uint32_t viewportOffsetsY[4] = { 0, 0, 1, 1 };
-        const uint32_t viewportWidth = shadowmapSize;
-        const uint32_t viewportHeight = shadowmapSize;
-
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
-        //  set light frustum info
         int rsmIndex = 0;
-        pPerFrameData->mCameraCurrViewProj = pPerFrameData->lights[rsmIndex].mLightViewProj;
-        pPerFrameData->rsmLightIndex = rsmIndex;
-        this->res_scene->SetPerFrameConstants();
-
+        
         //  prepare batches
-        opaques.clear(); transparents.clear();
-        this->pRSMPass->BuildBatchLists(&opaques, &transparents);
+        opaques.clear();
+        this->pRSMPass->BuildBatchLists(&opaques, NULL, rsmIndex);
 
         //  determine render area
         VkRect2D rectScissor_RSM;
@@ -386,14 +423,63 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         rectScissor_RSM.extent = { viewportWidth, viewportHeight };
 
         //  render scene (opaque objects)
-        //  ToDo : render scene (transparent objects)
+        this->rp_RSM_opaq.BeginPass(cmdBuf1, rectScissor_RSM);
         {
-            this->rp_RSM_full.BeginPass(cmdBuf1, rectScissor_RSM);
-
-            this->pRSMPass->DrawBatchList(cmdBuf1, &opaques);
-
-            this->rp_RSM_full.EndPass(cmdBuf1);
+            vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 1);  // need class design
+            this->pRSMPass->DrawBatchList(cmdBuf1, &opaques, rsmIndex);
         }
+        this->rp_RSM_opaq.EndPass(cmdBuf1);
+    }
+
+    this->barrier_Cache_G_R(cmdBuf1);
+
+    //  save depth caches
+    {
+        VkImageCopy copy;
+        copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT; // | VK_IMAGE_ASPECT_STENCIL_BIT;
+        copy.srcSubresource.mipLevel = 0;
+        copy.srcSubresource.baseArrayLayer = 0;
+        copy.srcSubresource.layerCount = 1;
+        copy.srcOffset = { 0, 0, 0 };
+        copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT; // | VK_IMAGE_ASPECT_STENCIL_BIT;
+        copy.dstSubresource.mipLevel = 0;
+        copy.dstSubresource.baseArrayLayer = 0;
+        copy.dstSubresource.layerCount = 1;
+        copy.dstOffset = { 0, 0, 0 };
+
+        //  RSM depth
+        copy.extent = { viewportWidth * 2, viewportHeight * 2, 1 };
+        vkCmdCopyImage(cmdBuf1, this->pRSM->m_DepthBuffer.Resource(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            this->cache_rsmDepth.Resource(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &copy);
+    }
+
+    this->barrier_RT(cmdBuf1);
+
+    //  Pass 1.2-T : reflective shadow map (transparent)
+    if (this->pRSMPass && pPerFrameData)
+    {
+        //  ToDo : setup this pass to utilize multiple light src. (<=4)
+        int rsmIndex = 0;
+
+        //  prepare batches
+        transparents.clear();
+        this->pRSMPass->BuildBatchLists(NULL, &transparents, rsmIndex);
+        std::sort(transparents.begin(), transparents.end());
+
+        //  determine render area
+        VkRect2D rectScissor_RSM;
+        rectScissor_RSM.offset = { (int32_t)(viewportOffsetsX[rsmIndex] * viewportWidth),
+                                (int32_t)(viewportOffsetsY[rsmIndex] * viewportHeight) };
+        rectScissor_RSM.extent = { viewportWidth, viewportHeight };
+
+        //  render scene (transparent objects)
+        this->rp_RSM_trans.BeginPass(cmdBuf1, rectScissor_RSM);
+        {
+            vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 0); // need class design
+            this->pRSMPass->DrawBatchList(cmdBuf1, &transparents, rsmIndex);
+        }
+        this->rp_RSM_trans.EndPass(cmdBuf1);
 
         rsmReady = true;
     }
@@ -401,40 +487,73 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     if (gBufReady && rsmReady)
     {
         //  image barrier (synchronization) before lighting phase
-        this->doGeomDataTransition(cmdBuf1);
+        this->barrier_D_C(cmdBuf1);
 
         //  pass 2.1 : D-light
         //
+        this->dLighting->Draw(cmdBuf1, &this->rectScissor, &this->res_scene->m_perFrameConstants);
         
-        //  set uniform data
-        DirectLighting::per_frame* dLightingPerFrameData = this->dLighting->SetPerFrameConstants();
-        dLightingPerFrameData->cameraPos = pPerFrameData->cameraPos;
-        dLightingPerFrameData->light = pPerFrameData->lights[0];
-
-        this->dLighting->Draw(cmdBuf1, &this->rectScissor);
-        
-
         //  pass 2.2 : I-light
         //
-        
-        //  set uniform data
-        IndirectLighting::per_frame* iLightingPerFrameData = this->iLighting->SetPerFrameConstants();
-        iLightingPerFrameData->light = pPerFrameData->lights[0];
+        ////  set uniform data
+        //IndirectLighting::per_frame* iLightingPerFrameData = this->iLighting->SetPerFrameConstants();
+        //iLightingPerFrameData->light = pPerFrameData->lights[0];
 
-        this->iLighting->Draw(cmdBuf1, &this->rectScissor);
+        //this->iLighting->Draw(cmdBuf1, &this->rectScissor, ACTIVATE_ILIGHT);
+    }
+
+    //  pass 1.1 : G-Buffer (transparent)
+    if (this->pGltfPbrPass && pPerFrameData)
+    {
+        //  memory barrier
+        //  1. all g-buffer : read -> write
+        //  2. D-target (HDR) : write -> read
+        this->barrier_GT_Cache_D(cmdBuf1);
+
+        //  retrieve render batch lists of separated opaque meshes and transparent meshes
+        transparents.clear();
+        this->pGltfPbrPass->BuildBatchLists(NULL, &transparents);
+
+        //  determine render area
+        VkRect2D rectScissor_GBuffer = this->rectScissor;
+
+        //  render scene (transparent objects)
+        this->rp_gBuffer_trans.BeginPass(cmdBuf1, rectScissor_GBuffer);
+        {
+            vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 1);  // need class design
+            this->pGltfPbrPass->DrawBatchList(cmdBuf1, &transparents);
+        }
+        this->rp_gBuffer_trans.EndPass(cmdBuf1);
+    }
+
+    if (gBufReady && rsmReady)
+    {
+        //  memory barrier
+        //  1. g-buffer : write -> read
+        //  2. D-target (HDR) : read -> write
+        this->barrier_DT_RF(cmdBuf1);
+
+        //  pass 2.1 : D-light
+        //
+        this->dLighting->Draw(cmdBuf1, &this->rectScissor, &this->res_scene->m_perFrameConstants);
     }
 
     //  image barrier (synchronization) before aggregation
-    this->doLightingTransition(cmdBuf1);
+    //this->barrier_A2(cmdBuf1);
 
     //  aggregation (D-Light + I-Light)
-    this->aggregator.Draw(cmdBuf1, pState->DIWeight);
+    //this->aggregator.Draw(cmdBuf1, pState->DIWeight);
+    
+    if (pPerFrameData)
+    {
+        //  memory barrier
+        //  1. g-buffer (motion, depth) : write -> read
+        //  2. D-target (HDR) : write -> read
+        this->barrier_AA(cmdBuf1);
 
-    //  image barrier (synchronization) before TAA
-    this->doAggregationTransition(cmdBuf1);
-
-    //  resolve TAA
-    this->tAA.Draw(cmdBuf1);
+        //  resolve TAA
+        this->tAA.Draw(cmdBuf1);
+    }
 
     //  submit cmd buffer for rendering
     {
@@ -554,7 +673,7 @@ int Renderer::loadScene(GLTFCommon* pLoader, int stage)
             &this->sBufferPool,
             &this->dBufferRing
         );
-        this->res_scene->LoadTextures(&this->asyncPool);
+        this->res_scene->LoadData(&this->asyncPool);
     }
     else if (stage == 2)
     {
@@ -571,7 +690,7 @@ int Renderer::loadScene(GLTFCommon* pLoader, int stage)
             nullptr, // no non-procedural skydome
             false, // no SSAO
             VK_NULL_HANDLE, // no shadow calculation in GBuffer pass
-            &this->rp_RSM_full,
+            &this->rp_RSM_opaq,
             &this->asyncPool
         );
     }
@@ -590,7 +709,7 @@ int Renderer::loadScene(GLTFCommon* pLoader, int stage)
             nullptr, // no non-procedural skydome
             false, // no SSAO
             VK_NULL_HANDLE, // no shadow calculation in GBuffer pass
-            &this->rp_gBuffer_full,
+            &this->rp_gBuffer_opaq,
             &this->asyncPool
         );
     }
@@ -642,10 +761,86 @@ void Renderer::setupRenderPass()
 {
 }
 
-void Renderer::doGeomDataTransition(VkCommandBuffer cmdBuf)
+void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 8;
+    const uint32_t numBarriers = 2; // 4
+    VkImageMemoryBarrier barriers[numBarriers];
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].pNext = NULL;
+    barriers[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    //  barrier 0 : RSM depth
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barriers[0].image = this->pRSM->m_DepthBuffer.Resource();
+
+    //  barrier 1 : RSM depth (cache)
+    barriers[1] = barriers[0];
+    barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barriers[1].image = this->cache_rsmDepth.Resource();
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 0, NULL,
+        numBarriers, barriers);
+}
+
+void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
+{
+    //  transition images
+    const uint32_t numBarriers = 2; // 4
+    VkImageMemoryBarrier barriers[numBarriers];
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].pNext = NULL;
+    barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    //  barrier 0 : RSM depth
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barriers[0].image = this->pRSM->m_DepthBuffer.Resource();
+
+    //  barrier 1 : RSM depth (cache)
+    barriers[1] = barriers[0];
+    barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    barriers[1].image = this->cache_rsmDepth.Resource();
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        0, 0, NULL, 0, NULL,
+        numBarriers, barriers);
+}
+
+void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
+{
+    //  transition images
+    const uint32_t numBarriers = 9;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
@@ -677,42 +872,175 @@ void Renderer::doGeomDataTransition(VkCommandBuffer cmdBuf)
         //  barrier 3 : specular
         barriers[3] = barriers[0];
         barriers[3].image = this->pGBuffer->m_SpecularRoughness.Resource();
+
+        //  barrier 4 : emissive/flux
+        barriers[4] = barriers[0];
+        barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
     }
 
     //  for RSM
     {
-        //  barrier 4 : world coord
-        barriers[4] = barriers[0];
-        barriers[4].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barriers[4].image = this->pRSM->m_WorldCoord.Resource();
+        //  barrier 5 : world coord
+        barriers[5] = barriers[0];
+        barriers[5].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[5].image = this->pRSM->m_WorldCoord.Resource();
 
-        //  barrier 5 : normal
-        barriers[5] = barriers[4];
-        barriers[5].image = this->pRSM->m_NormalBuffer.Resource();
+        //  barrier 6 : normal
+        barriers[6] = barriers[5];
+        barriers[6].image = this->pRSM->m_NormalBuffer.Resource();
 
-        //  barrier 6 : flux
-        barriers[6] = barriers[4];
-        barriers[6].image = this->pRSM->m_Diffuse.Resource();
+        //  barrier 7 : flux
+        barriers[7] = barriers[5];
+        barriers[7].image = this->pRSM->m_EmissiveFlux.Resource();
 
-        //  barrier 7 : depth
-        barriers[7] = barriers[0];
-        barriers[7].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barriers[7].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barriers[7].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barriers[7].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barriers[7].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        barriers[7].image = this->pRSM->m_DepthBuffer.Resource();
+        //  barrier 8 : depth
+        barriers[8] = barriers[0];
+        barriers[8].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barriers[8].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[8].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barriers[8].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barriers[8].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        barriers[8].image = this->pRSM->m_DepthBuffer.Resource();
     }
 
     vkCmdPipelineBarrier(cmdBuf,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL,
         numBarriers, barriers);
 }
 
-void Renderer::doLightingTransition(VkCommandBuffer cmdBuf)
+void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
+{
+    //  transition images
+    const uint32_t numBarriers = 6;
+    VkImageMemoryBarrier barriers[numBarriers];
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].pNext = NULL; 
+    barriers[0].srcAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    //  for g-buffer
+    {
+        //  barrier 0 : world coord
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[0].image = this->pGBuffer->m_WorldCoord.Resource();
+
+        //  barrier 1 : normal
+        barriers[1] = barriers[0];
+        barriers[1].image = this->pGBuffer->m_NormalBuffer.Resource();
+
+        //  barrier 2 : diffuse
+        barriers[2] = barriers[0];
+        barriers[2].image = this->pGBuffer->m_Diffuse.Resource();
+
+        //  barrier 3 : specular
+        barriers[3] = barriers[0];
+        barriers[3].image = this->pGBuffer->m_SpecularRoughness.Resource();
+
+        //  barrier 4 : emissive/flux
+        barriers[4] = barriers[0];
+        barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
+    }
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0, 0, NULL, 0, NULL,
+        5, &barriers[0]);
+
+    ////  for D-target (HDR buffer)
+    //{
+    //    //  barrier 5 : HDR
+    //    barriers[5] = barriers[0];
+    //    barriers[5].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    //    barriers[5].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    //    barriers[5].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    //    barriers[5].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    //    barriers[5].image = this->pGBuffer->m_HDR.Resource(); 
+    //}
+
+    //vkCmdPipelineBarrier(cmdBuf,
+    //    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+    //    VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //    0, 0, NULL, 0, NULL,
+    //    1, &barriers[5]);
+}
+
+void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
+{
+    //  transition images
+    const uint32_t numBarriers = 6;
+    VkImageMemoryBarrier barriers[numBarriers];
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].pNext = NULL;
+    barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    //  for g-buffer
+    {
+        //  barrier 0 : world coord
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[0].image = this->pGBuffer->m_WorldCoord.Resource();
+
+        //  barrier 1 : normal
+        barriers[1] = barriers[0];
+        barriers[1].image = this->pGBuffer->m_NormalBuffer.Resource();
+
+        //  barrier 2 : diffuse
+        barriers[2] = barriers[0];
+        barriers[2].image = this->pGBuffer->m_Diffuse.Resource();
+
+        //  barrier 3 : specular
+        barriers[3] = barriers[0];
+        barriers[3].image = this->pGBuffer->m_SpecularRoughness.Resource();
+
+        //  barrier 4 : emissive/flux
+        barriers[4] = barriers[0];
+        barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
+    }
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL,
+        5, &barriers[0]);
+
+    ////  for D-target (HDR buffer)
+    //{
+    //    //  barrier 5 : HDR
+    //    barriers[5] = barriers[0];
+    //    barriers[5].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    //    barriers[5].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    //    barriers[5].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    //    barriers[5].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    //    barriers[5].image = this->pGBuffer->m_HDR.Resource(); 
+    //}
+
+    //vkCmdPipelineBarrier(cmdBuf,
+    //    VK_PIPELINE_STAGE_TRANSFER_BIT,
+    //    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+    //    0, 0, NULL, 0, NULL,
+    //    1, &barriers[5]);
+}
+
+void Renderer::barrier_A2(VkCommandBuffer cmdBuf)
 {
     //  transition images
     const uint32_t numBarriers = 2;
@@ -746,14 +1074,14 @@ void Renderer::doLightingTransition(VkCommandBuffer cmdBuf)
         numBarriers, barriers);
 }
 
-void Renderer::doAggregationTransition(VkCommandBuffer cmdBuf)
+void Renderer::barrier_AA(VkCommandBuffer cmdBuf)
 {
     //  transition images
     const uint32_t numBarriers = 3;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
-    barriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -763,14 +1091,13 @@ void Renderer::doAggregationTransition(VkCommandBuffer cmdBuf)
     barriers[0].subresourceRange.layerCount = 1;
 
     //  barrier 0 : color buffer -> TAA
-    barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barriers[0].image = this->pGBuffer->m_HDR.Resource();
 
     //  barrier 1 : motion vector
     barriers[1] = barriers[0];
-    barriers[1].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     barriers[1].image = this->pGBuffer->m_MotionVectors.Resource();
 
     //  barrier 2 : camera depth
@@ -778,13 +1105,11 @@ void Renderer::doAggregationTransition(VkCommandBuffer cmdBuf)
     barriers[2].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barriers[2].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     //barriers[2].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL; // this layout should be used, but TAA's desc uses SHADER_READ_ONLY_OPTIMAL instead. 
-    barriers[2].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barriers[2].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     barriers[2].image = this->pGBuffer->m_DepthBuffer.Resource();
 
     vkCmdPipelineBarrier(cmdBuf,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | 
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL,
         numBarriers, barriers);

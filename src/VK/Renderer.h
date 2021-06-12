@@ -53,13 +53,17 @@ protected:
 	
 	//	G-Buffer pass
 	GBuffer* pGBuffer = nullptr;						
-	GBufferRenderPass rp_gBuffer_full;
+	GBufferRenderPass rp_gBuffer_opaq, rp_gBuffer_trans;
 	GltfPbrPass* pGltfPbrPass = nullptr;				
 
 	//	RSM pass
 	GBuffer* pRSM = nullptr;
-	GBufferRenderPass rp_RSM_full;
+	GBufferRenderPass rp_RSM_opaq, rp_RSM_trans;
 	GltfPbrPass* pRSMPass = nullptr;
+
+	//	render target caches
+	Texture cache_rsmDepth;
+	VkImageView cache_rsmDepthSRV = VK_NULL_HANDLE;
 	
 	//	lighting passes
 	DirectLighting* dLighting = nullptr;
@@ -78,7 +82,13 @@ protected:
 	//	ToDo : setup renderpass containing multiple subpasses instead
 	void setupRenderPass();
 
-	void doGeomDataTransition(VkCommandBuffer cmdBuf); // except camDepth and Motion
-	void doLightingTransition(VkCommandBuffer cmdBuf); // D + I
-	void doAggregationTransition(VkCommandBuffer cmdBuf); // include camDepth and Motion
+	void barrier_Cache_G_R(VkCommandBuffer cmdBuf);
+	//void barrier_AO_I1(VkCommandBuffer cmdBuf); // future
+	void barrier_RT(VkCommandBuffer cmdBuf); // future : RT_I2
+	void barrier_D_C(VkCommandBuffer cmdBuf);
+	void barrier_A1(VkCommandBuffer cmdBuf);
+	void barrier_GT_Cache_D(VkCommandBuffer cmdBuf);
+	void barrier_DT_RF(VkCommandBuffer cmdBuf);
+	void barrier_A2(VkCommandBuffer cmdBuf);
+	void barrier_AA(VkCommandBuffer cmdBuf);
 };

@@ -7,30 +7,71 @@
 bool DirectLighting::getAttachmentDesc(std::vector<VkAttachmentDescription>& attachments)
 {
     uint32_t numInputAttachments = DLightInput::CameraGBuffer::numImageViews;
-    attachments.resize(1 + numInputAttachments);
+    attachments.resize(2 + numInputAttachments);
     int cnt = 0;
 
     //  output
-    ::AttachNoClearBeforeUse(
-        VK_FORMAT_R16G16B16A16_SFLOAT,
+    //  HDR
+    ::AttachBlending(
+        VK_FORMAT_R16G16B16A16_UNORM,
         VK_SAMPLE_COUNT_1_BIT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         &attachments[cnt++]
     );
+    //  Depth/Stencil
+    ::AttachBlending(
+        VK_FORMAT_D32_SFLOAT_S8_UINT,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        &attachments[cnt++]
+    );
 
     //  for GBuffer as input att.
-    for (int att = 0; att < numInputAttachments; att++)
-        AttachNoClearBeforeUse(
-            VK_FORMAT_R16G16B16A16_SFLOAT,
-            VK_SAMPLE_COUNT_1_BIT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            &attachments[cnt++]
-        );
+    //  World Coord
+    AttachBlending(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        &attachments[cnt++]
+    );
+    //  Normal
+    AttachBlending(
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        &attachments[cnt++]
+    );
+    //  Diffuse
+    AttachBlending(
+        VK_FORMAT_R16G16B16A16_UNORM,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        &attachments[cnt++]
+    );
+    //  Specular
+    AttachBlending(
+        VK_FORMAT_R16G16B16A16_UNORM,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        &attachments[cnt++]
+    );
+    //  Emissive
+    AttachBlending(
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_SAMPLE_COUNT_1_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        &attachments[cnt++]
+    );
 
-    assert(cnt == 1 + numInputAttachments);
-    return false; // because it doesn't consist of depth att.
+    assert(cnt == 2 + numInputAttachments);
+    return true; // because it does consist of depth att.
 }
 
 void DirectLighting::OnCreate(
@@ -45,14 +86,6 @@ void DirectLighting::OnCreate(
     this->pResourceViewHeaps = pHeaps;
     this->pDynamicBufferRing = pDynamicBufferRing;
     this->pStaticBufferPool = pStaticBufferPool;
-
-    //  define color clearing settings
-    {
-        this->clearValues.clear();
-        VkClearValue clearValue; // this is a union
-        clearValue.color = { 0.0f, 0.0f, 0.0f, 0.0f };
-        this->clearValues.push_back(clearValue);
-    }
 
     //  create sampler for sampling RSM (depth)
     {
@@ -130,10 +163,12 @@ void DirectLighting::OnCreateWindowSizeDependentResources(
     {
         std::vector<VkImageView> attachments = {
             pGBuffer->m_HDRSRV,
+            pGBuffer->m_DepthBufferDSV,
             pGBuffer->m_WorldCoordSRV,
             pGBuffer->m_NormalBufferSRV,
             pGBuffer->m_DiffuseSRV,
-            pGBuffer->m_SpecularRoughnessSRV
+            pGBuffer->m_SpecularRoughnessSRV,
+            pGBuffer->m_EmissiveFluxSRV
         };
 
         this->framebuffer = CreateFrameBuffer(
@@ -168,6 +203,7 @@ void DirectLighting::setCameraGBuffer(DLightInput::CameraGBuffer* pCamSRVs)
     desc_image[1].imageView = pCamSRVs->normal;
     desc_image[2].imageView = pCamSRVs->diffuse;
     desc_image[3].imageView = pCamSRVs->specular;
+    desc_image[4].imageView = pCamSRVs->emissive;
 
     //  update decriptor
     std::vector<VkWriteDescriptorSet> write(numInputAttachments);
@@ -194,7 +230,12 @@ void DirectLighting::setLightGBuffer(DLightInput::LightGBuffer* pLightSRVs)
     std::vector<VkDescriptorImageInfo> desc_image(numImages);
     desc_image[0].sampler = this->sampler_shadow;
     desc_image[0].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    desc_image[0].imageView = pLightSRVs->depth;
+    for (int i = 1; i < numImages; i++)
+        desc_image[i] = desc_image[0];
+
+    desc_image[0].imageView = pLightSRVs->depthTransparent;
+    desc_image[1].imageView = pLightSRVs->stencilTransparent;
+    desc_image[2].imageView = pLightSRVs->depthOpaque;
 
     //  update decriptor
     std::vector<VkWriteDescriptorSet> write(numImages);
@@ -214,17 +255,7 @@ void DirectLighting::setLightGBuffer(DLightInput::LightGBuffer* pLightSRVs)
     vkUpdateDescriptorSets(pDevice->GetDevice(), write.size(), write.data(), 0, NULL);
 }
 
-DirectLighting::per_frame* DirectLighting::SetPerFrameConstants()
-{
-    //  allocate constant buffer from dynamic buffer ring
-    //  and get the pointer to that buffer
-    per_frame* pPerFrame;
-    this->pDynamicBufferRing->AllocConstantBuffer(sizeof(per_frame), (void**)&pPerFrame, &this->descInfo_perFrame);
-
-    return pPerFrame;
-}
-
-void DirectLighting::Draw(VkCommandBuffer commandBuffer, VkRect2D* renderArea)
+void DirectLighting::Draw(VkCommandBuffer commandBuffer, VkRect2D* renderArea, VkDescriptorBufferInfo* perFrameDesc)
 {
     //  begin render pass
     {
@@ -251,7 +282,7 @@ void DirectLighting::Draw(VkCommandBuffer commandBuffer, VkRect2D* renderArea)
 
     //  bind descriptor sets
     uint32_t numUniformOffsets = 1;
-    uint32_t uniformOffset = this->descInfo_perFrame.offset;
+    uint32_t uniformOffset = perFrameDesc->offset;
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, this->pipelineLayout, 0, DLIGHT_NUM_DESCRIPTOR_SETS, this->descriptorSets, numUniformOffsets, &uniformOffset);
 
     //  bind pipeline
@@ -276,11 +307,12 @@ void DirectLighting::createRenderPass()
     //  setup attachment refs
     //  NOTE : ref no MUST match the index specified upon framebuffer creation
     VkAttachmentReference color_reference = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth_reference = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
     uint32_t numInputAttachments = DLightInput::CameraGBuffer::numImageViews;
     std::vector<VkAttachmentReference> input_references(numInputAttachments);
     for (unsigned int att = 0; att < numInputAttachments; att++)
-        input_references[att] = { (uint32_t)(att + 1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        input_references[att] = { (uint32_t)(att + 2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
     VkSubpassDescription subpass = {};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -290,22 +322,27 @@ void DirectLighting::createRenderPass()
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_reference;
     subpass.pResolveAttachments = NULL;
-    subpass.pDepthStencilAttachment = NULL;
+    subpass.pDepthStencilAttachment = &depth_reference;
     subpass.preserveAttachmentCount = 0;
     subpass.pPreserveAttachments = NULL;
 
     //  define dependencies between subpasses
     VkSubpassDependency dep = {};
-    //  from g-buffer+RSM to d-light
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     dep.dependencyFlags = 0; // VK_DEPENDENCY_BY_REGION_BIT; // should try if already modify g-buf and rsm render pass dep.
+    dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep.dstSubpass = VK_SUBPASS_EXTERNAL;
+    dep.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep.srcSubpass = 0;
     
     //  create render pass object
     VkRenderPassCreateInfo rp_info = {};
@@ -351,7 +388,7 @@ void DirectLighting::createDescriptors(DefineList* pAttributeDefines)
     //  set 1 (RSM)
     {
         uint32_t numRSMViews = DLightInput::LightGBuffer::numImageViews;
-        (*pAttributeDefines)["ID_shadowMap"] = std::to_string(numRSMViews - 1);
+        (*pAttributeDefines)["ID_shadowMap"] = std::to_string(0);
         this->pResourceViewHeaps->AllocDescriptor(
             numRSMViews,
             nullptr,
@@ -450,7 +487,7 @@ void DirectLighting::createPipeline(const DefineList* defines)
 
     VkPipelineColorBlendAttachmentState att_state = {};
     att_state.colorWriteMask = 0xf;
-    att_state.blendEnable = VK_FALSE;
+    att_state.blendEnable = VK_TRUE; // change to false when aggregator is utilized
     att_state.alphaBlendOp = VK_BLEND_OP_ADD;
     att_state.colorBlendOp = VK_BLEND_OP_ADD;
     att_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -500,20 +537,20 @@ void DirectLighting::createPipeline(const DefineList* defines)
     ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     ds.pNext = NULL;
     ds.flags = 0;
-    ds.depthTestEnable = VK_TRUE;
+    ds.depthTestEnable = VK_FALSE;
     ds.depthWriteEnable = VK_FALSE;
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     ds.back.failOp = VK_STENCIL_OP_KEEP;
-    ds.back.passOp = VK_STENCIL_OP_KEEP;
-    ds.back.compareOp = VK_COMPARE_OP_ALWAYS;
-    ds.back.compareMask = 0;
-    ds.back.reference = 0;
     ds.back.depthFailOp = VK_STENCIL_OP_KEEP;
-    ds.back.writeMask = 0;
+    ds.back.passOp = VK_STENCIL_OP_ZERO; // reset the stencil value
+    ds.back.compareOp = VK_COMPARE_OP_EQUAL;
+    ds.back.compareMask = 0xff;
+    ds.back.reference = 1;
+    ds.back.writeMask = 0xff;
     ds.depthBoundsTestEnable = VK_FALSE;
     ds.minDepthBounds = 0;
     ds.maxDepthBounds = 0;
-    ds.stencilTestEnable = VK_FALSE;
+    ds.stencilTestEnable = VK_TRUE;
     ds.front = ds.back;
 
     // multi sample state

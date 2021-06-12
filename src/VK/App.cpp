@@ -10,7 +10,11 @@ const bool VALIDATION_ENABLED = false;
 #endif
 
 #define APP_NAME "BIRT Caustics v0.1"
-#define CAULDRON_MEDIA_PATH "..\\res\\Cauldron-Media\\"
+
+#define RESOURCES_PATH "..\\res\\"
+
+#define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\"
+#define SCENE_FILENAME "CornellBox_Water.gltf"
 
 
 class App : public FrameworkWindows
@@ -69,12 +73,12 @@ void App::OnCreate(HWND hWnd)
 {
     //  check if cauldron-media repo exists
     //  this repo contains default multimedia and scene files needed for the first phase of the development.
-    DWORD dwAttrib = GetFileAttributes(CAULDRON_MEDIA_PATH);
+    /*DWORD dwAttrib = GetFileAttributes(CAULDRON_MEDIA_PATH);
     if ((dwAttrib == INVALID_FILE_ATTRIBUTES) || ((dwAttrib & FILE_ATTRIBUTE_DIRECTORY)) == 0)
     {
-        MessageBox(NULL, "Media files not found!\n\nPlease check the readme on how to get the media files.", "Cauldron Panic!", MB_ICONERROR);
+        MessageBox(NULL, "Scene files not found!\n\nPlease check the readme on how to get the media files.", "Cauldron Panic!", MB_ICONERROR);
         exit(0);
-    }
+    }*/
 
     //  create device
     this->device.OnCreate("My App", "My Engine", VALIDATION_ENABLED, VALIDATION_ENABLED, hWnd);
@@ -104,29 +108,29 @@ void App::OnCreate(HWND hWnd)
 
     //  load scene (metadata)
     this->sceneLoader = new SceneLoader();
-    if (!this->sceneLoader->Load(std::string(CAULDRON_MEDIA_PATH) + "Sponza\\glTF\\", "Sponza.gltf"))
+    if (!this->sceneLoader->Load(SCENE_PATH, SCENE_FILENAME))
     {
-        MessageBox(NULL, "The selected model couldn't be found, please check the documentation", "Cauldron Panic!", MB_ICONERROR);
+        MessageBox(NULL, "The selected model couldn't be found, please check the file path", "Cauldron Panic!", MB_ICONERROR);
         exit(0);
     }
 
-    //  tweak scene data
-    {
-        //  Sponza has no light cached in the data, so we add one
-        tfNode n;
-        n.m_tranform.LookAt(PolarToVector(XM_PI / 2.0f, 0.58f) * 3.5f, XMVectorSet(0, 0, 0, 0));
-        //n.m_tranform.LookAt(this->renderer_state.sunDir * 20.5f, XMVectorSet(0, 0, 0, 0));
+    ////  tweak scene data
+    //{
+    //    //  Sponza has no light cached in the data, so we add one
+    //    tfNode n;
+    //    n.m_tranform.LookAt(PolarToVector(XM_PI / 2.0f, 0.58f) * 3.5f, XMVectorSet(0, 0, 0, 0));
+    //    //n.m_tranform.LookAt(this->renderer_state.sunDir * 20.5f, XMVectorSet(0, 0, 0, 0));
 
-        tfLight l;
-        l.m_type = tfLight::LIGHT_SPOTLIGHT;
-        l.m_intensity = 10.f;
-        l.m_color = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
-        l.m_range = 15;
-        l.m_outerConeAngle = XM_PI / 4.0f;
-        l.m_innerConeAngle = (XM_PI / 4.0f) * 0.9f;
+    //    tfLight l;
+    //    l.m_type = tfLight::LIGHT_SPOTLIGHT;
+    //    l.m_intensity = 10.f;
+    //    l.m_color = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
+    //    l.m_range = 15;
+    //    l.m_outerConeAngle = XM_PI / 4.0f;
+    //    l.m_innerConeAngle = (XM_PI / 4.0f) * 0.9f;
 
-        this->sceneLoader->AddLight(n, l);
-    }
+    //    this->sceneLoader->AddLight(n, l);
+    //}
 
     //  init GUI subsystem
     ImGUI_Init((void*)hWnd);
