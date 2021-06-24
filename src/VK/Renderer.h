@@ -1,8 +1,9 @@
 #pragma once
 
 #include "DirectLighting.h"
-#include "IndirectLighting.h"
-#include "Aggregator.h"
+#include "Caustics.h"
+//#include "IndirectLighting.h"
+//#include "Aggregator.h"
 
 class Renderer
 {
@@ -62,12 +63,19 @@ protected:
 	GltfPbrPass* pRSMPass = nullptr;
 
 	//	render target caches
-	Texture cache_rsmDepth;
-	VkImageView cache_rsmDepthSRV = VK_NULL_HANDLE;
+	Texture cache_rsmDepth, cache_gbufDepth;
+	VkImageView cache_rsmDepthSRV = VK_NULL_HANDLE,
+		cache_gbufDepthSRV = VK_NULL_HANDLE;
+
+	//	caches mipmap
+	DownSamplePS cache_rsmDepthMipmap, cache_gbufDepthMipmap;
 	
 	//	lighting passes
 	DirectLighting* dLighting = nullptr;
-	IndirectLighting* iLighting = nullptr;
+
+	//	GI effects
+	Caustics* caustics = nullptr;
+	//IndirectLighting* iLighting = nullptr;
 
 	//	skydome
 	//SkyDome skyDome;
@@ -75,7 +83,7 @@ protected:
 	GBufferRenderPass rp_skyDome;
 
 	//	post-processing handle
-	Aggregator aggregator;
+	//Aggregator aggregator;
 	ToneMapping toneMapping;
 	TAA tAA;
 	
@@ -84,7 +92,7 @@ protected:
 
 	void barrier_Cache_G_R(VkCommandBuffer cmdBuf);
 	//void barrier_AO_I1(VkCommandBuffer cmdBuf); // future
-	void barrier_RT(VkCommandBuffer cmdBuf); // future : RT_I2
+	void barrier_RT_DS(VkCommandBuffer cmdBuf); // future : RT_DS_I2
 	void barrier_D_C(VkCommandBuffer cmdBuf);
 	void barrier_A1(VkCommandBuffer cmdBuf);
 	void barrier_GT_Cache_D(VkCommandBuffer cmdBuf);

@@ -7,7 +7,8 @@ set(headers
 	Renderer.h
 	DirectLighting.h
 	IndirectLighting.h
-	Aggregator.h)
+	Aggregator.h
+	Caustics.h)
 source_group("Header Files" FILES ${headers})
 
 set(sources
@@ -15,7 +16,8 @@ set(sources
 	Renderer.cpp
 	DirectLighting.cpp
 	IndirectLighting.cpp
-	Aggregator.cpp)
+	Aggregator.cpp
+	Caustics.cpp)
 source_group("Source Files" FILES ${sources})
 
 set(shaders
@@ -23,7 +25,8 @@ set(shaders
 	Bypass-vert.glsl
 	DirectLighting-frag.glsl
 	IndirectLighting-frag.glsl
-	Aggregator.glsl)
+	Aggregator.glsl
+	PhotonTracer.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
 

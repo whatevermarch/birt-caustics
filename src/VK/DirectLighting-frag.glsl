@@ -30,12 +30,12 @@ layout(set = 1, binding = ID_shadowMap) uniform sampler2DShadow u_shadowMap;
 layout(set = 1, binding = ID_shadowMap + 1) uniform usampler2D u_opacityMap;
 layout(set = 1, binding = ID_shadowMap + 2) uniform sampler2DShadow u_shadowMapBase;
 
-// input_attachment_index = index declared in framebuffer
-layout (input_attachment_index = 0, set = 2, binding = 0) uniform subpassInput gcam_WorldCoord;
-layout (input_attachment_index = 1, set = 2, binding = 1) uniform subpassInput gcam_Normal;
-layout (input_attachment_index = 2, set = 2, binding = 2) uniform subpassInput gcam_Diffuse;
-layout (input_attachment_index = 3, set = 2, binding = 3) uniform subpassInput gcam_Specular;
-layout (input_attachment_index = 4, set = 2, binding = 4) uniform subpassInput gcam_Emissive;
+// g-buffer sampler
+layout (set = 2, binding = 0) uniform sampler2D gcam_WorldCoord;
+layout (set = 2, binding = 1) uniform sampler2D gcam_Normal;
+layout (set = 2, binding = 2) uniform sampler2D gcam_Diffuse;
+layout (set = 2, binding = 3) uniform sampler2D gcam_Specular;
+layout (set = 2, binding = 4) uniform sampler2D gcam_Emissive;
 
 //--------------------------------------------------------------------------------------
 //  FS outputs
@@ -48,21 +48,23 @@ layout (location = 0) out vec4 out_color;
 //--------------------------------------------------------------------------------------
 
 #include "functions.glsl"
-//#include "shadowFiltering.h"
 #include "PBRLighting.h"
 
 void main()
 {
-    //  load pixel data from g-buffer
-    vec4 cam_WorldPos = subpassLoad(gcam_WorldCoord).rgba;
-    vec4 cam_NormalAO = subpassLoad(gcam_Normal).rgba;
-    vec3 cam_Normal = cam_NormalAO.rgb * 2.0 - 1.0;
+    //  invert screen's UV coord
+    vec2 screenCoord = vec2(UV.x, 1.0f - UV.y);
+
+    vec4 cam_WorldPos = texture(gcam_WorldCoord, screenCoord).rgba;
+    vec4 cam_NormalAO = texture(gcam_Normal, screenCoord).rgba;
+    vec3 cam_Diffuse = texture(gcam_Diffuse, screenCoord).rgb;
+    vec4 cam_SpecularRoughness = texture(gcam_Specular, screenCoord).rgba;
+    vec4 cam_EmissiveAlpha = texture(gcam_Emissive, screenCoord).rgba;
+
+    vec3 cam_Normal = cam_NormalAO.rgb * 2.0f - 1.0f;
     float cam_AO = cam_NormalAO.a;
-    vec3 cam_Diffuse = subpassLoad(gcam_Diffuse).rgb;
-    vec4 cam_SpecularRoughness = subpassLoad(gcam_Specular).rgba;
     vec3 cam_Specular = cam_SpecularRoughness.xyz;
     float cam_PerceptualRoughness = cam_SpecularRoughness.w;
-    vec4 cam_EmissiveAlpha = subpassLoad(gcam_Emissive).rgba;
     vec3 cam_Emissive = cam_EmissiveAlpha.rgb;
     float cam_Alpha = cam_EmissiveAlpha.a;
     

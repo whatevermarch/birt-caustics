@@ -61,7 +61,7 @@ protected:
     StaticBufferPool* pStaticBufferPool = nullptr;
 
     VkDescriptorBufferInfo descInfo_perFrame;
-    VkSampler sampler_shadow;
+    VkSampler sampler_default, sampler_shadow;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;

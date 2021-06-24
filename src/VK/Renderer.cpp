@@ -14,7 +14,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 	this->pDevice = pDevice;
 
 	// Create a 'static' pool for vertices and indices 
-	const uint32_t staticGeometryMemSize = 128 * 1024 * 1024;
+	const uint32_t staticGeometryMemSize = 32 * 1024 * 1024; // default = 128MB
 	this->sBufferPool.OnCreate(pDevice, staticGeometryMemSize, true, "StaticGeom");
 
 	// Create a 'dynamic' constant buffer
@@ -72,7 +72,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
         this->rp_RSM_trans.OnCreateWindowSizeDependentResources(totalRSMSize, totalRSMSize);
 
         //  init cache
-        this->cache_rsmDepth.InitDepthStencil(this->pDevice, totalRSMSize, totalRSMSize, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, "RSM Depth Cache");
+        this->cache_rsmDepth.InitDepthStencil(this->pDevice, totalRSMSize, totalRSMSize, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, "RSM Depth Cache");
         {
             VkImageMemoryBarrier use_barrier = {};
             use_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -126,6 +126,24 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
         this->rp_skyDome.OnCreate(this->pGBuffer, GBUFFER_FORWARD, true, "SkyDome RenderPass");
     }
+    //  caches mipmap (RSM)
+    {
+        this->cache_rsmDepthMipmap.OnCreate(this->pDevice,
+            &this->resViewHeaps,
+            &this->dBufferRing,
+            &this->sBufferPool,
+            VK_FORMAT_D32_SFLOAT_S8_UINT);
+        this->cache_rsmDepthMipmap.OnCreateWindowSizeDependentResources(
+            shadowmapSize, shadowmapSize, 
+            &this->cache_rsmDepth, static_cast<int>(std::log2(shadowmapSize)) - 1);
+        
+        this->cache_gbufDepthMipmap.OnCreate(this->pDevice,
+            &this->resViewHeaps,
+            &this->dBufferRing,
+            &this->sBufferPool,
+            VK_FORMAT_D32_SFLOAT_S8_UINT);
+    }
+
     //  pass 2.1 : D-Light
     {
         this->dLighting = new DirectLighting();
@@ -157,6 +175,18 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
         lightGB.normal = this->pRSM->m_NormalBufferSRV;
         lightGB.flux = this->pRSM->m_EmissiveFluxSRV;
         this->iLighting->setLightGBuffer(&lightGB);*/
+    }
+    //  pass 2.3 : Caustics
+    {
+        this->caustics = new Caustics();
+        this->caustics->OnCreate(this->pDevice,
+            &this->uploadHeap,
+            &this->resViewHeaps,
+            &this->dBufferRing,
+            this->pRSM,
+            this->cache_rsmDepthSRV,
+            this->cache_rsmDepthMipmap.GetTexture(),
+            static_cast<int>(std::log2(shadowmapSize)) - 1);
     }
 
     //  skydome
@@ -200,6 +230,10 @@ void Renderer::OnDestroy()
     /*this->skyDome.OnDestroy();*/
     this->rp_skyDome.OnDestroy();
 
+    this->caustics->OnDestroy();
+    delete this->caustics;
+    this->caustics = nullptr;
+
     /*this->iLighting->OnDestroy();
     delete this->iLighting;
     this->iLighting = nullptr;*/
@@ -213,6 +247,10 @@ void Renderer::OnDestroy()
     this->pGBuffer->OnDestroy();
     delete this->pGBuffer;
     this->pGBuffer = nullptr;
+
+    this->cache_rsmDepthMipmap.OnDestroy();
+    this->cache_rsmDepthMipmap.OnDestroyWindowSizeDependentResources();
+    this->cache_gbufDepthMipmap.OnDestroy();
 
     vkDestroyImageView(this->pDevice->GetDevice(), cache_rsmDepthSRV, nullptr);
     this->cache_rsmDepthSRV = VK_NULL_HANDLE;
@@ -259,6 +297,36 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
     this->rp_gBuffer_trans.OnCreateWindowSizeDependentResources(Width, Height);
     this->rp_skyDome.OnCreateWindowSizeDependentResources(Width, Height);
 
+    //  init cache
+    this->cache_gbufDepth.InitDepthStencil(this->pDevice, Width, Height, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, "G-Buffer Depth Cache");
+    {
+        VkImageMemoryBarrier use_barrier = {};
+        use_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        use_barrier.srcAccessMask = 0;
+        use_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        use_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        use_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        use_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        use_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        use_barrier.subresourceRange.baseMipLevel = 0;
+        use_barrier.subresourceRange.levelCount = 1;
+        use_barrier.subresourceRange.baseArrayLayer = 0;
+        use_barrier.subresourceRange.layerCount = 1;
+        use_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        use_barrier.image = this->cache_rsmDepth.Resource();
+
+        vkCmdPipelineBarrier(this->uploadHeap.GetCommandList(),
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, NULL, 0, NULL, 1, &use_barrier);
+
+        this->uploadHeap.FlushAndFinish();
+    }
+    this->cache_gbufDepth.CreateSRV(&cache_gbufDepthSRV);
+    this->cache_gbufDepthMipmap.OnCreateWindowSizeDependentResources(
+        Width, Height, 
+        &this->cache_gbufDepth, static_cast<int>(std::log2(Width > Height ? Height : Width)) - 1);
+
     this->dLighting->OnCreateWindowSizeDependentResources(Width, Height, this->pGBuffer);
     {
         DLightInput::CameraGBuffer camGB;
@@ -278,6 +346,11 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
         this->iLighting->setCameraGBuffer(&camGB);
     }*/
 
+    this->caustics->OnCreateWindowSizeDependentResources(Width, Height, 
+        this->pGBuffer, this->cache_gbufDepthSRV, 
+        this->cache_gbufDepthMipmap.GetTexture(),
+        static_cast<int>(std::log2(Width > Height ? Height : Width)) - 1);
+
     /*this->aggregator.setInputImages(
         this->pGBuffer->m_HDRSRV,
         this->iLighting->srv_output,
@@ -294,8 +367,15 @@ void Renderer::OnDestroyWindowSizeDependentResources()
 {
     this->tAA.OnDestroyWindowSizeDependentResources();
 
+    this->caustics->OnDestroyWindowSizeDependentResources();
     //this->iLighting->OnDestroyWindowSizeDependentResources();
     this->dLighting->OnDestroyWindowSizeDependentResources();
+
+    this->cache_gbufDepthMipmap.OnDestroyWindowSizeDependentResources();
+
+    vkDestroyImageView(this->pDevice->GetDevice(), cache_gbufDepthSRV, nullptr);
+    this->cache_gbufDepthSRV = VK_NULL_HANDLE;
+    this->cache_gbufDepth.OnDestroy();
 
     this->rp_skyDome.OnDestroyWindowSizeDependentResources();
     this->rp_gBuffer_trans.OnDestroyWindowSizeDependentResources();
@@ -447,6 +527,12 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         copy.dstSubresource.layerCount = 1;
         copy.dstOffset = { 0, 0, 0 };
 
+        //  GBuffer depth
+        copy.extent = { this->width, this->height, 1 };
+        vkCmdCopyImage(cmdBuf1, this->pGBuffer->m_DepthBuffer.Resource(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            this->cache_gbufDepth.Resource(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &copy);
+
         //  RSM depth
         copy.extent = { viewportWidth * 2, viewportHeight * 2, 1 };
         vkCmdCopyImage(cmdBuf1, this->pRSM->m_DepthBuffer.Resource(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -454,12 +540,19 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
             1, &copy);
     }
 
-    this->barrier_RT(cmdBuf1);
+    this->barrier_RT_DS(cmdBuf1);
+
+    //  generate mipmap of caches
+    {
+        this->cache_rsmDepthMipmap.Draw(cmdBuf1);
+        this->cache_gbufDepthMipmap.Draw(cmdBuf1);
+    }
 
     //  Pass 1.2-T : reflective shadow map (transparent)
     if (this->pRSMPass && pPerFrameData)
     {
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
+        //  ToDo : rsmIndex is not a light index ( e.g. selected lights could be 0,2,3,5)
         int rsmIndex = 0;
 
         //  prepare batches
@@ -500,6 +593,24 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         //iLightingPerFrameData->light = pPerFrameData->lights[0];
 
         //this->iLighting->Draw(cmdBuf1, &this->rectScissor, ACTIVATE_ILIGHT);
+
+        //  pass 2.3 : Caustics
+        //
+        Caustics::Constants causticsConstants{};
+        causticsConstants.camViewProj = pPerFrameData->mCameraCurrViewProj;
+        causticsConstants.camPosition = pPerFrameData->cameraPos;
+        causticsConstants.invTanHalfFovH = XMVectorGetX(pCamera->GetProjection().r[0]);
+        causticsConstants.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
+        causticsConstants.rsmWidth = shadowmapSize;
+        causticsConstants.rsmHeight = shadowmapSize;
+
+        //  ToDo : setup this pass to utilize multiple light src. (<=4)
+        //  ToDo : rsmIndex is not a light index ( e.g. selected lights could be 0,2,3,5)
+        int rsmIndex = 0;
+        float* lightPos = pPerFrameData->lights[rsmIndex].position;
+        causticsConstants.lightPos[rsmIndex] = XMVectorSet(lightPos[0], lightPos[1], lightPos[2], 1.0f);
+
+        this->caustics->Draw(cmdBuf1, this->rectScissor, causticsConstants);
     }
 
     //  pass 1.1 : G-Buffer (transparent)
@@ -764,7 +875,7 @@ void Renderer::setupRenderPass()
 void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 2; // 4
+    const uint32_t numBarriers = 4;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
@@ -792,6 +903,14 @@ void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
     barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     barriers[1].image = this->cache_rsmDepth.Resource();
 
+    //  barrier 2 : GBuffer depth
+    barriers[2] = barriers[0];
+    barriers[2].image = this->pGBuffer->m_DepthBuffer.Resource();
+
+    //  barrier 2 : GBuffer depth (cache)
+    barriers[3] = barriers[1];
+    barriers[3].image = this->cache_gbufDepth.Resource();
+
     vkCmdPipelineBarrier(cmdBuf,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -799,10 +918,10 @@ void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
         numBarriers, barriers);
 }
 
-void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
+void Renderer::barrier_RT_DS(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 2; // 4
+    const uint32_t numBarriers = 4;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
@@ -830,6 +949,14 @@ void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
     barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     barriers[1].image = this->cache_rsmDepth.Resource();
 
+    //  barrier 2 : GBuffer depth
+    barriers[2] = barriers[0];
+    barriers[2].image = this->pGBuffer->m_DepthBuffer.Resource();
+
+    //  barrier 2 : GBuffer depth (cache)
+    barriers[3] = barriers[1];
+    barriers[3].image = this->cache_gbufDepth.Resource();
+
     vkCmdPipelineBarrier(cmdBuf,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
@@ -840,12 +967,12 @@ void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
 void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 9;
+    const uint32_t numBarriers = 10;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
     barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barriers[0].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].subresourceRange.baseMipLevel = 0;
@@ -889,23 +1016,27 @@ void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
         barriers[6] = barriers[5];
         barriers[6].image = this->pRSM->m_NormalBuffer.Resource();
 
-        //  barrier 7 : flux
+        //  barrier 7 : specular
         barriers[7] = barriers[5];
-        barriers[7].image = this->pRSM->m_EmissiveFlux.Resource();
+        barriers[7].image = this->pRSM->m_SpecularRoughness.Resource();
 
-        //  barrier 8 : depth
-        barriers[8] = barriers[0];
-        barriers[8].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barriers[8].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barriers[8].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barriers[8].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barriers[8].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        barriers[8].image = this->pRSM->m_DepthBuffer.Resource();
+        //  barrier 8 : flux
+        barriers[8] = barriers[5];
+        barriers[8].image = this->pRSM->m_EmissiveFlux.Resource();
+
+        //  barrier 9 : depth
+        barriers[9] = barriers[0];
+        barriers[9].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barriers[9].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[9].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barriers[9].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barriers[9].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        barriers[9].image = this->pRSM->m_DepthBuffer.Resource();
     }
 
     vkCmdPipelineBarrier(cmdBuf,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL,
         numBarriers, barriers);
 }
@@ -917,7 +1048,7 @@ void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL; 
-    barriers[0].srcAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT; // VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -983,7 +1114,7 @@ void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
     barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barriers[0].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].subresourceRange.baseMipLevel = 0;
@@ -1043,7 +1174,7 @@ void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
 void Renderer::barrier_A2(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 2;
+    const uint32_t numBarriers = 1; // 2
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
@@ -1063,9 +1194,9 @@ void Renderer::barrier_A2(VkCommandBuffer cmdBuf)
     barriers[0].image = this->pGBuffer->m_HDR.Resource();
 
     //  barrier 1 : i-light
-    barriers[1] = barriers[0];
+    /*barriers[1] = barriers[0];
     barriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barriers[1].image = this->iLighting->output.Resource();
+    barriers[1].image = this->iLighting->output.Resource();*/
 
     vkCmdPipelineBarrier(cmdBuf,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
