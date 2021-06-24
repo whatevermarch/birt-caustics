@@ -205,7 +205,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     }
 
     //  initialize post-processing handles
-    //this->aggregator.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing);
+    this->aggregator_1.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing, 1); // should be 3 if includes AO and I1
     this->toneMapping.OnCreate(this->pDevice, pSwapChain->GetRenderPass(), 
         &this->resViewHeaps, &this->sBufferPool, &this->dBufferRing);
     this->tAA.OnCreate(this->pDevice, &this->resViewHeaps, &this->sBufferPool, &this->dBufferRing);
@@ -224,7 +224,7 @@ void Renderer::OnDestroy()
 
     this->tAA.OnDestroy();
     this->toneMapping.OnDestroy();
-    //this->aggregator.OnDestroy();
+    this->aggregator_1.OnDestroy();
 
     this->skyDomeProc.OnDestroy();
     /*this->skyDome.OnDestroy();*/
@@ -351,11 +351,12 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
         this->cache_gbufDepthMipmap.GetTexture(),
         static_cast<int>(std::log2(Width > Height ? Height : Width)) - 1);
 
-    /*this->aggregator.setInputImages(
+    VkImageView fxSRVs[] = { this->caustics->GetTextureView(), VK_NULL_HANDLE, VK_NULL_HANDLE };
+    this->aggregator_1.UpdateInputs(
+        Width, Height,
         this->pGBuffer->m_HDRSRV,
-        this->iLighting->srv_output,
-        Width, Height
-    );*/
+        fxSRVs
+    );
 
     this->tAA.OnCreateWindowSizeDependentResources(Width, Height, this->pGBuffer);
     this->toneMapping.UpdatePipelines(pSwapChain->GetRenderPass());
@@ -511,7 +512,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_RSM_opaq.EndPass(cmdBuf1);
     }
 
-    this->barrier_Cache_G_R(cmdBuf1);
+    this->barrier_Cache_GO_RO(cmdBuf1); //////////////////////////////////////////////////////////////////////////////////
 
     //  save depth caches
     {
@@ -540,13 +541,15 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
             1, &copy);
     }
 
-    this->barrier_RT_DS(cmdBuf1);
+    this->barrier_DS(cmdBuf1); ///////////////////////////////////////////////////////////////////////////////////////////
 
     //  generate mipmap of caches
     {
         this->cache_rsmDepthMipmap.Draw(cmdBuf1);
         this->cache_gbufDepthMipmap.Draw(cmdBuf1);
     }
+
+    this->barrier_RT(cmdBuf1); ///////////////////////////////////////////////////////////////////////////////////////////
 
     //  Pass 1.2-T : reflective shadow map (transparent)
     if (this->pRSMPass && pPerFrameData)
@@ -577,11 +580,10 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         rsmReady = true;
     }
 
+    this->barrier_D_C(cmdBuf1); //////////////////////////////////////////////////////////////////////////////////////////
+
     if (gBufReady && rsmReady)
     {
-        //  image barrier (synchronization) before lighting phase
-        this->barrier_D_C(cmdBuf1);
-
         //  pass 2.1 : D-light
         //
         this->dLighting->Draw(cmdBuf1, &this->rectScissor, &this->res_scene->m_perFrameConstants);
@@ -613,14 +615,19 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->caustics->Draw(cmdBuf1, this->rectScissor, causticsConstants);
     }
 
+    this->barrier_A1(cmdBuf1); ////////////////////////////////////////////////////////////////////////////////////////////
+
+    //  aggregate multiple pipeline results (opaques)
+    {
+        float weights[] = {1.0, 1.0, 0.0, 0.0};
+        this->aggregator_1.Draw(cmdBuf1, weights);
+    }
+
+    this->barrier_GT_Cache_D(cmdBuf1); ////////////////////////////////////////////////////////////////////////////////////
+
     //  pass 1.1 : G-Buffer (transparent)
     if (this->pGltfPbrPass && pPerFrameData)
     {
-        //  memory barrier
-        //  1. all g-buffer : read -> write
-        //  2. D-target (HDR) : write -> read
-        this->barrier_GT_Cache_D(cmdBuf1);
-
         //  retrieve render batch lists of separated opaque meshes and transparent meshes
         transparents.clear();
         this->pGltfPbrPass->BuildBatchLists(NULL, &transparents);
@@ -637,13 +644,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_gBuffer_trans.EndPass(cmdBuf1);
     }
 
+    this->barrier_DT_RF(cmdBuf1); ////////////////////////////////////////////////////////////////////////////////////////
     if (gBufReady && rsmReady)
     {
-        //  memory barrier
-        //  1. g-buffer : write -> read
-        //  2. D-target (HDR) : read -> write
-        this->barrier_DT_RF(cmdBuf1);
-
         //  pass 2.1 : D-light
         //
         this->dLighting->Draw(cmdBuf1, &this->rectScissor, &this->res_scene->m_perFrameConstants);
@@ -654,14 +657,11 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
 
     //  aggregation (D-Light + I-Light)
     //this->aggregator.Draw(cmdBuf1, pState->DIWeight);
-    
+
+    this->barrier_AA(cmdBuf1); ///////////////////////////////////////////////////////////////////////////////////////////
+
     if (pPerFrameData)
     {
-        //  memory barrier
-        //  1. g-buffer (motion, depth) : write -> read
-        //  2. D-target (HDR) : write -> read
-        this->barrier_AA(cmdBuf1);
-
         //  resolve TAA
         this->tAA.Draw(cmdBuf1);
     }
@@ -872,7 +872,7 @@ void Renderer::setupRenderPass()
 {
 }
 
-void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
+void Renderer::barrier_Cache_GO_RO(VkCommandBuffer cmdBuf)
 {
     //  transition images
     const uint32_t numBarriers = 4;
@@ -918,7 +918,7 @@ void Renderer::barrier_Cache_G_R(VkCommandBuffer cmdBuf)
         numBarriers, barriers);
 }
 
-void Renderer::barrier_RT_DS(VkCommandBuffer cmdBuf)
+void Renderer::barrier_DS(VkCommandBuffer cmdBuf)
 {
     //  transition images
     const uint32_t numBarriers = 4;
@@ -962,6 +962,10 @@ void Renderer::barrier_RT_DS(VkCommandBuffer cmdBuf)
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         0, 0, NULL, 0, NULL,
         numBarriers, barriers);
+}
+
+void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
+{
 }
 
 void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
@@ -1041,6 +1045,38 @@ void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
         numBarriers, barriers);
 }
 
+void Renderer::barrier_A1(VkCommandBuffer cmdBuf)
+{
+    //  transition images
+    const uint32_t numBarriers = 1;
+    VkImageMemoryBarrier barriers[numBarriers];
+    barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barriers[0].pNext = NULL;
+    barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // no RAW or WAW hazard for sure, so this works
+    barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barriers[0].subresourceRange.baseMipLevel = 0;
+    barriers[0].subresourceRange.levelCount = 1;
+    barriers[0].subresourceRange.baseArrayLayer = 0;
+    barriers[0].subresourceRange.layerCount = 1;
+
+    //  barrier 0 : d-light
+    barriers[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barriers[0].image = this->pGBuffer->m_HDR.Resource();
+
+    //  barrier 1 : caustics
+    //  implicit barrier by its subpass dependency
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL,
+        numBarriers, barriers);
+}
+
 void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
 {
     //  transition images
@@ -1082,28 +1118,22 @@ void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
         barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
     }
 
+    //  for D-target (HDR buffer)
+    {
+        //  barrier 5 : HDR
+        barriers[5] = barriers[0];
+        barriers[5].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        //barriers[5].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; // ToDo : decomment when D-cache ready
+        barriers[5].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        //barriers[5].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; // ToDo : decomment when D-cache ready
+        barriers[5].image = this->pGBuffer->m_HDR.Resource(); 
+    }
+
     vkCmdPipelineBarrier(cmdBuf,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // | VK_PIPELINE_STAGE_TRANSFER_BIT, // ToDo : decomment when D-cache ready
         0, 0, NULL, 0, NULL,
-        5, &barriers[0]);
-
-    ////  for D-target (HDR buffer)
-    //{
-    //    //  barrier 5 : HDR
-    //    barriers[5] = barriers[0];
-    //    barriers[5].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    //    barriers[5].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    //    barriers[5].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    //    barriers[5].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    //    barriers[5].image = this->pGBuffer->m_HDR.Resource(); 
-    //}
-
-    //vkCmdPipelineBarrier(cmdBuf,
-    //    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-    //    VK_PIPELINE_STAGE_TRANSFER_BIT,
-    //    0, 0, NULL, 0, NULL,
-    //    1, &barriers[5]);
+        numBarriers, barriers);
 }
 
 void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
@@ -1151,9 +1181,8 @@ void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         0, 0, NULL, 0, NULL,
-        5, &barriers[0]);
+        5, barriers);
 
-    ////  for D-target (HDR buffer)
     //{
     //    //  barrier 5 : HDR
     //    barriers[5] = barriers[0];
@@ -1168,7 +1197,7 @@ void Renderer::barrier_DT_RF(VkCommandBuffer cmdBuf)
     //    VK_PIPELINE_STAGE_TRANSFER_BIT,
     //    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
     //    0, 0, NULL, 0, NULL,
-    //    1, &barriers[5]);
+    //    numBarriers, barriers);
 }
 
 void Renderer::barrier_A2(VkCommandBuffer cmdBuf)

@@ -3,7 +3,7 @@
 #include "DirectLighting.h"
 #include "Caustics.h"
 //#include "IndirectLighting.h"
-//#include "Aggregator.h"
+#include "Aggregator.h"
 
 class Renderer
 {
@@ -83,16 +83,16 @@ protected:
 	GBufferRenderPass rp_skyDome;
 
 	//	post-processing handle
-	//Aggregator aggregator;
+	Aggregator aggregator_1; //, aggregator_2;
 	ToneMapping toneMapping;
 	TAA tAA;
 	
 	//	ToDo : setup renderpass containing multiple subpasses instead
 	void setupRenderPass();
 
-	void barrier_Cache_G_R(VkCommandBuffer cmdBuf);
-	//void barrier_AO_I1(VkCommandBuffer cmdBuf); // future
-	void barrier_RT_DS(VkCommandBuffer cmdBuf); // future : RT_DS_I2
+	void barrier_Cache_GO_RO(VkCommandBuffer cmdBuf);
+	void barrier_DS(VkCommandBuffer cmdBuf); // future : DS_AO_I1
+	void barrier_RT(VkCommandBuffer cmdBuf); // future : RT_I2
 	void barrier_D_C(VkCommandBuffer cmdBuf);
 	void barrier_A1(VkCommandBuffer cmdBuf);
 	void barrier_GT_Cache_D(VkCommandBuffer cmdBuf);

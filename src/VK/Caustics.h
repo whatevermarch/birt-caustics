@@ -34,9 +34,9 @@ public:
         VkImageView gbufDepthOpaque0SRV, Texture* pGBufDepthOpaque1N, int mipCount);
     void OnDestroyWindowSizeDependentResources();
 
-    Texture* getResult() { return &this->pm_irradianceMap; }
-    const Texture* getResult() const { return &this->pm_irradianceMap; }
-    VkImageView getResultView() {return this->pm_irradianceMapSRV; }
+    Texture* GetTexture() { return &this->pm_irradianceMap; }
+    const Texture* GetTexture() const { return &this->pm_irradianceMap; }
+    VkImageView GetTextureView() {return this->pm_irradianceMapSRV; }
 
 	void Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, const Caustics::Constants& constants);
 
