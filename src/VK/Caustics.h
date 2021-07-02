@@ -4,18 +4,24 @@ class Caustics
 {
 public:
 
-    struct Constants
+    struct Transform
     {
-        XMMATRIX camViewProj;
-        XMVECTOR camPosition;
-        
+        XMMATRIX view;
+        XMVECTOR position;
         float invTanHalfFovH;
         float invTanHalfFovV;
+        float nearPlane;
+        float farPlane;
+    };
 
-        uint32_t rsmWidth;
-        uint32_t rsmHeight;
+    struct Constants
+    {
+        Caustics::Transform camera;
+        Caustics::Transform lights[4]; // we have 4 quarters of RSM
 
-        XMVECTOR lightPos[4];
+        float samplingMapScale;
+        float rayThickness;
+        uint32_t padding[2];
     };
 
     void OnCreate(
@@ -50,6 +56,7 @@ protected:
     PostProcCS photonTracer;
     //  ... and denoiser (as building block)
 
+    uint32_t              rsmWidth = 0, rsmHeight = 0;
     uint32_t              outWidth = 0, outHeight = 0;
     int                   mipCount_rsm = 0;
     int                   mipCount_gbuf = 0;

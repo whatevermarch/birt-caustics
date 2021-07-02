@@ -132,7 +132,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
             &this->resViewHeaps,
             &this->dBufferRing,
             &this->sBufferPool,
-            VK_FORMAT_D32_SFLOAT_S8_UINT);
+            VK_FORMAT_D32_SFLOAT_S8_UINT, true);
         this->cache_rsmDepthMipmap.OnCreateWindowSizeDependentResources(
             shadowmapSize, shadowmapSize, 
             &this->cache_rsmDepth, static_cast<int>(std::log2(shadowmapSize)) - 1);
@@ -599,18 +599,30 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         //  pass 2.3 : Caustics
         //
         Caustics::Constants causticsConstants{};
-        causticsConstants.camViewProj = pPerFrameData->mCameraCurrViewProj;
-        causticsConstants.camPosition = pPerFrameData->cameraPos;
-        causticsConstants.invTanHalfFovH = XMVectorGetX(pCamera->GetProjection().r[0]);
-        causticsConstants.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
-        causticsConstants.rsmWidth = shadowmapSize;
-        causticsConstants.rsmHeight = shadowmapSize;
+        causticsConstants.camera.view = pCamera->GetView();
+        causticsConstants.camera.position = pCamera->GetPosition();
+        causticsConstants.camera.invTanHalfFovH = XMVectorGetX(pCamera->GetProjection().r[0]);
+        causticsConstants.camera.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
+        causticsConstants.camera.nearPlane = pCamera->GetNearPlane();
+        causticsConstants.camera.farPlane = pCamera->GetFarPlane();
+        causticsConstants.samplingMapScale = 2.0f;
+        causticsConstants.rayThickness = 0.05f;
 
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
         //  ToDo : rsmIndex is not a light index ( e.g. selected lights could be 0,2,3,5)
         int rsmIndex = 0;
+        XMMATRIX lightProj; // ref from 'GltfCommon.cpp'
+        if (pPerFrameData->lights[rsmIndex].type == LightType_Spot)
+            lightProj = XMMatrixPerspectiveFovRH(acosf(pPerFrameData->lights[rsmIndex].outerConeCos) * 2.0f, 1, .1f, 100.0f);
+        else if (pPerFrameData->lights[rsmIndex].type == LightType_Directional)
+            lightProj = XMMatrixOrthographicRH(30.0, 30.0, 0.1f, 100.0f);
         float* lightPos = pPerFrameData->lights[rsmIndex].position;
-        causticsConstants.lightPos[rsmIndex] = XMVectorSet(lightPos[0], lightPos[1], lightPos[2], 1.0f);
+        causticsConstants.lights[rsmIndex].view = pPerFrameData->lights[rsmIndex].mLightViewProj * XMMatrixInverse(nullptr, lightProj);
+        causticsConstants.lights[rsmIndex].position = XMVectorSet(lightPos[0], lightPos[1], lightPos[2], 1.0f);
+        causticsConstants.lights[rsmIndex].invTanHalfFovH = XMVectorGetX(lightProj.r[0]);
+        causticsConstants.lights[rsmIndex].invTanHalfFovV = XMVectorGetY(lightProj.r[1]);
+        causticsConstants.lights[rsmIndex].nearPlane = .1f;
+        causticsConstants.lights[rsmIndex].farPlane = 100.f;
 
         this->caustics->Draw(cmdBuf1, this->rectScissor, causticsConstants);
     }
@@ -645,6 +657,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     }
 
     this->barrier_DT_RF(cmdBuf1); ////////////////////////////////////////////////////////////////////////////////////////
+
     if (gBufReady && rsmReady)
     {
         //  pass 2.1 : D-light

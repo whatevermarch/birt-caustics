@@ -179,7 +179,7 @@ float FilterShadow(vec3 uv)
 
             if (visibility == 0 && isOpaque == 0)
             {
-                float decay = 0.45f; // ToDo : decay = alpha (fetched from rsm-Flux)
+                float decay = 0.85f; // ToDo : decay = alpha (fetched from rsm-Flux)
                 visibility = texture(u_shadowMapBase, uv + vec3(dx * i, dy * j, 0)).r * (1.0f - decay);
             }
 

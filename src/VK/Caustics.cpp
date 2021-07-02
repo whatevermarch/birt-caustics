@@ -18,6 +18,9 @@ void Caustics::OnCreate(
 	this->pResourceViewHeaps = pResourceViewHeaps;
 	this->pDynamicBufferRing = pDynamicBufferRing;
 
+	this->rsmWidth = pRSM->m_EmissiveFlux.GetWidth() / 2;
+	this->rsmHeight = pRSM->m_EmissiveFlux.GetHeight() / 2;
+
 	//	define intermediate buffer storing photon tracing results
 	{
 		const uint32_t hitpointBufferMemSize = MAX_PHOTON_COUNT * sizeof(float) * 4;
@@ -49,8 +52,8 @@ void Caustics::OnCreate(
 		{
 			VkSamplerCreateInfo info = {};
 			info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-			info.magFilter = VK_FILTER_LINEAR;
-			info.minFilter = VK_FILTER_LINEAR;
+			info.magFilter = VK_FILTER_LINEAR; // VK_FILTER_NEAREST;
+			info.minFilter = VK_FILTER_LINEAR; // VK_FILTER_NEAREST;
 			info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 			info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 			info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -238,8 +241,8 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 	}
 
 	const uint32_t sampleDimPerBlock = BLOCK_SIZE * this->samplingMapScale;
-	const uint32_t numBlocks_x = (constants.rsmWidth + sampleDimPerBlock - 1) / sampleDimPerBlock,
-					numBlocks_y = (constants.rsmHeight + sampleDimPerBlock - 1) / sampleDimPerBlock;
+	const uint32_t numBlocks_x = (this->rsmWidth + sampleDimPerBlock - 1) / sampleDimPerBlock,
+					numBlocks_y = (this->rsmHeight + sampleDimPerBlock - 1) / sampleDimPerBlock;
 	const uint32_t numPhotons = BLOCK_SIZE * BLOCK_SIZE * numBlocks_x * numBlocks_y;
 
 	//	photon tracing pass
