@@ -20,8 +20,9 @@ public:
         Caustics::Transform lights[4]; // we have 4 quarters of RSM
 
         float samplingMapScale;
-        float rayThickness;
-        uint32_t padding[2];
+        float rayThickness_xy;
+        float rayThickness_z;
+        float tMax;
     };
 
     void OnCreate(

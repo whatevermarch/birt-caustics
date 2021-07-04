@@ -606,7 +606,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         causticsConstants.camera.nearPlane = pCamera->GetNearPlane();
         causticsConstants.camera.farPlane = pCamera->GetFarPlane();
         causticsConstants.samplingMapScale = 2.0f;
-        causticsConstants.rayThickness = 0.05f;
+        causticsConstants.rayThickness_xy = 0.05f;
+        causticsConstants.rayThickness_z = 0.012f;
+        causticsConstants.tMax = 100.f;
 
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
         //  ToDo : rsmIndex is not a light index ( e.g. selected lights could be 0,2,3,5)
