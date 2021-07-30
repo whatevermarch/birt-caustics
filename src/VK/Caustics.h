@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SVGF.h"
+
 class Caustics
 {
 public:
@@ -19,10 +21,10 @@ public:
         Caustics::Transform camera;
         Caustics::Transform lights[4]; // we have 4 quarters of RSM
 
-        float samplingMapScale;
+        float samplingMapScale = 2.0f;
         float rayThickness_xy;
         float rayThickness_z;
-        float tMax;
+        float tMax = 100.f;
     };
 
     void OnCreate(
@@ -54,6 +56,8 @@ protected:
     ResourceViewHeaps* pResourceViewHeaps = nullptr;
     DynamicBufferRing* pDynamicBufferRing = nullptr;
 
+    GBuffer* pGBuffer = nullptr;
+
     PostProcCS photonTracer;
     //  ... and denoiser (as building block)
 
@@ -64,7 +68,6 @@ protected:
 
     //  photon tracing stuff
     //
-    uint32_t              samplingMapScale = 2;
     Texture               samplingMap;
     VkImageView           samplingMapSRV = VK_NULL_HANDLE;
 
@@ -96,6 +99,9 @@ protected:
     VkFramebuffer         pm_framebuffer;
 
     void createPhotonMapperPipeline(const DefineList& defines);
+
+    //  denoiser
+    SVGF denoiser;
 
     void generateSamplingPoints(UploadHeap& uploadHeap);
 };

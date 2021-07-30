@@ -13,7 +13,7 @@ bool DirectLighting::getAttachmentDesc(std::vector<VkAttachmentDescription>& att
     //  output
     //  HDR
     ::AttachBlending(
-        VK_FORMAT_R16G16B16A16_UNORM,
+        VK_FORMAT_R16G16B16A16_SFLOAT, //VK_FORMAT_R16G16B16A16_UNORM,
         VK_SAMPLE_COUNT_1_BIT,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,

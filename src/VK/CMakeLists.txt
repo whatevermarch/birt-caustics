@@ -8,7 +8,8 @@ set(headers
 	DirectLighting.h
 	IndirectLighting.h
 	Aggregator.h
-	Caustics.h)
+	Caustics.h
+	SVGF.h)
 source_group("Header Files" FILES ${headers})
 
 set(sources
@@ -17,7 +18,8 @@ set(sources
 	DirectLighting.cpp
 	IndirectLighting.cpp
 	Aggregator.cpp
-	Caustics.cpp)
+	Caustics.cpp
+	SVGF.cpp)
 source_group("Source Files" FILES ${sources})
 
 set(shaders
@@ -26,7 +28,12 @@ set(shaders
 	DirectLighting-frag.glsl
 	IndirectLighting-frag.glsl
 	Aggregator.glsl
-	PhotonTracer.glsl)
+	RGBEConversion.h
+	PhotonTracer.glsl
+	SVGFEdgeStoppingFunc.h
+	SVGFReproject.glsl
+	SVGFStabilityBoost.glsl
+	SVGFAtrousWT.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
 

@@ -26,7 +26,8 @@ void Caustics::OnCreate(
 		const uint32_t hitpointBufferMemSize = MAX_PHOTON_COUNT * sizeof(float) * 4;
 		this->hitpointBuffer.OnCreateEx(this->pDevice, hitpointBufferMemSize, StaticBufferPool::STATIC_BUFFER_USAGE_GPU, "Hitpoint Buffer");
 
-		assert(this->hitpointBuffer.AllocBuffer(MAX_PHOTON_COUNT, sizeof(float) * 4, (void*)nullptr, &this->hitPosDescInfo));
+		bool res = this->hitpointBuffer.AllocBuffer(MAX_PHOTON_COUNT, sizeof(float) * 4, (void*)nullptr, &this->hitPosDescInfo);
+		assert(res);
 	}
 
 	//	photon tracing pass
@@ -52,8 +53,8 @@ void Caustics::OnCreate(
 		{
 			VkSamplerCreateInfo info = {};
 			info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-			info.magFilter = VK_FILTER_LINEAR; // VK_FILTER_NEAREST;
-			info.minFilter = VK_FILTER_LINEAR; // VK_FILTER_NEAREST;
+			info.magFilter = VK_FILTER_NEAREST;
+			info.minFilter = VK_FILTER_NEAREST;
 			info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 			info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 			info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -112,22 +113,28 @@ void Caustics::OnCreate(
 
 		// Create a Render pass that accounts for blending
         //
-		VkAttachmentDescription att_desc = {};
+		VkAttachmentDescription att_desc[1];
 		AttachClearBeforeUse(
-			VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
 			(VkSampleCountFlagBits)1,
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			&att_desc);
-        this->pm_renderPass = CreateRenderPassOptimal(this->pDevice->GetDevice(), 1, &att_desc, NULL);
+			&att_desc[0]);
+        this->pm_renderPass = CreateRenderPassOptimal(this->pDevice->GetDevice(), 1, att_desc, nullptr);
 
 		// Create Pipeline
 		this->createPhotonMapperPipeline(defines);
 	}
+
+	//	denoiser
+	this->denoiser.OnCreate(pDevice, pResourceViewHeaps, pDynamicBufferRing);
 }
 
 void Caustics::OnDestroy()
 {
+	//	denoiser
+	this->denoiser.OnDestroy();
+
 	//	photon map (point rendering) pass
 	{
 		vkDestroyPipeline(this->pDevice->GetDevice(), this->pm_pipeline, nullptr);
@@ -167,6 +174,8 @@ void Caustics::OnCreateWindowSizeDependentResources(
 	this->outWidth = Width;
 	this->outHeight = Height;
 
+	this->pGBuffer = pGBuffer;
+
 	//	photon tracing pass
 	{
 		//	create image view for gbuf depth (opaque)
@@ -185,10 +194,10 @@ void Caustics::OnCreateWindowSizeDependentResources(
 		this->pm_irradianceMap.InitRenderTarget(
             this->pDevice,
             this->outWidth, this->outHeight,
-            VK_FORMAT_R16G16B16A16_UNORM,
+			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
             VK_SAMPLE_COUNT_1_BIT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
             false,
             "Caustics Output"
         );
@@ -206,10 +215,19 @@ void Caustics::OnCreateWindowSizeDependentResources(
             this->outWidth, this->outHeight
         );
 	}
+
+	//	denoiser
+	this->denoiser.OnCreateWindowSizeDependentResources(
+		this->outWidth, this->outHeight,
+		&this->pm_irradianceMap, this->pm_irradianceMapSRV,
+		gbufDepthOpaque0SRV, pGBuffer);
 }
 
 void Caustics::OnDestroyWindowSizeDependentResources()
 {
+	//	denoiser
+	this->denoiser.OnDestroyWindowSizeDependentResources();
+
 	//	photon map (point rendering) pass
 	{
 		//  destroy frame buffer
@@ -240,7 +258,7 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 		*pAllocData = constants;
 	}
 
-	const uint32_t sampleDimPerBlock = BLOCK_SIZE * this->samplingMapScale;
+	const uint32_t sampleDimPerBlock = BLOCK_SIZE * constants.samplingMapScale;
 	const uint32_t numBlocks_x = (this->rsmWidth + sampleDimPerBlock - 1) / sampleDimPerBlock,
 					numBlocks_y = (this->rsmHeight + sampleDimPerBlock - 1) / sampleDimPerBlock;
 	const uint32_t numPhotons = BLOCK_SIZE * BLOCK_SIZE * numBlocks_x * numBlocks_y;
@@ -258,8 +276,6 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 
 	//	photon map (point rendering) pass
 	{
-		SetPerfMarkerBegin(commandBuffer, "Photon Mapping");
-
 		//	start render pass
 		VkClearValue cv{};
 		cv.color = {0.f, 0.f, 0.f, 0.f};
@@ -277,6 +293,8 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 		rp_begin.pClearValues = &cv;
 		vkCmdBeginRenderPass(commandBuffer, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
+		SetPerfMarkerBegin(commandBuffer, "Photon Mapping");
+
 		SetViewportAndScissor(commandBuffer, 
 			renderArea.offset.x, renderArea.offset.y,
 			renderArea.extent.width, renderArea.extent.height);
@@ -293,10 +311,23 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
         //
 		vkCmdDraw(commandBuffer, numPhotons, 1, 0, 0);
 
+		SetPerfMarkerEnd(commandBuffer);
+
 		//	end render pass
 		vkCmdEndRenderPass(commandBuffer);
+	}
 
-		SetPerfMarkerEnd(commandBuffer);
+	{
+		SVGF::Constants svgfConst;
+		svgfConst.alphaColor = 0.2f;
+		svgfConst.alphaMoments = 0.2f;
+		svgfConst.nearPlane = constants.camera.nearPlane;
+		svgfConst.farPlane = constants.camera.farPlane;
+		svgfConst.sigmaDepth = 1.f;
+		svgfConst.sigmaNormal = 128.f;
+		svgfConst.sigmaLuminance = 4.f;
+
+		this->denoiser.Draw(commandBuffer, svgfConst);
 	}
 
 	SetPerfMarkerEnd(commandBuffer);
@@ -443,10 +474,11 @@ void Caustics::createPhotonMapperPipeline(const DefineList& defines)
 		"#extension GL_ARB_shading_language_420pack : enable\n"
 		"layout (location = 0) in float in_packedIrradiance;\n"
 		"layout (location = 0) out vec4 out_irradiance;\n"
+		"#include \"RGBEConversion.h\"\n"
 		"void main() {\n"
 		"   if (in_packedIrradiance == 0)\n"
 		"       discard;\n"
-		"   out_irradiance = vec4(1); //unpackUnorm4x8(floatBitsToUint(in_packedIrradiance));\n"
+		"   out_irradiance = vec4(RGBEToFloat3(floatBitsToUint(in_packedIrradiance)), 1.0f);\n"
 		"}\n";
 
 	VkPipelineShaderStageCreateInfo vertexShader = {}, fragmentShader = {};

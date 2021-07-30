@@ -113,7 +113,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
                 { GBUFFER_EMISSIVE_FLUX, VK_FORMAT_R8G8B8A8_UNORM},
                 { GBUFFER_MOTION_VECTORS, VK_FORMAT_R16G16_SFLOAT},
                 //  final rt
-                { GBUFFER_FORWARD, VK_FORMAT_R16G16B16A16_UNORM},
+                { GBUFFER_FORWARD, VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/},
             },
             1
         );
@@ -605,9 +605,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         causticsConstants.camera.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
         causticsConstants.camera.nearPlane = pCamera->GetNearPlane();
         causticsConstants.camera.farPlane = pCamera->GetFarPlane();
-        causticsConstants.samplingMapScale = 2.0f;
-        causticsConstants.rayThickness_xy = 0.05f;
-        causticsConstants.rayThickness_z = 0.012f;
+        causticsConstants.samplingMapScale = 1.5f;
+        causticsConstants.rayThickness_xy = 0.02f;
+        causticsConstants.rayThickness_z = 0.015f;
         causticsConstants.tMax = 100.f;
 
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
@@ -986,7 +986,7 @@ void Renderer::barrier_RT(VkCommandBuffer cmdBuf)
 void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 10;
+    const uint32_t numBarriers = 11;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL;
@@ -1022,42 +1022,52 @@ void Renderer::barrier_D_C(VkCommandBuffer cmdBuf)
         //  barrier 4 : emissive/flux
         barriers[4] = barriers[0];
         barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
+
+        //  barrier 5 : motion vector
+        barriers[5] = barriers[0];
+        barriers[5].image = this->pGBuffer->m_MotionVectors.Resource();
     }
+
+    vkCmdPipelineBarrier(cmdBuf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, NULL, 0, NULL,
+        6, barriers);
 
     //  for RSM
     {
-        //  barrier 5 : world coord
-        barriers[5] = barriers[0];
-        barriers[5].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barriers[5].image = this->pRSM->m_WorldCoord.Resource();
+        //  barrier 6 : world coord
+        barriers[6] = barriers[0];
+        barriers[6].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[6].image = this->pRSM->m_WorldCoord.Resource();
 
-        //  barrier 6 : normal
-        barriers[6] = barriers[5];
-        barriers[6].image = this->pRSM->m_NormalBuffer.Resource();
-
-        //  barrier 7 : specular
+        //  barrier 7 : normal
         barriers[7] = barriers[5];
-        barriers[7].image = this->pRSM->m_SpecularRoughness.Resource();
+        barriers[7].image = this->pRSM->m_NormalBuffer.Resource();
 
-        //  barrier 8 : flux
+        //  barrier 8 : specular
         barriers[8] = barriers[5];
-        barriers[8].image = this->pRSM->m_EmissiveFlux.Resource();
+        barriers[8].image = this->pRSM->m_SpecularRoughness.Resource();
 
-        //  barrier 9 : depth
-        barriers[9] = barriers[0];
-        barriers[9].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barriers[9].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barriers[9].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barriers[9].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barriers[9].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        barriers[9].image = this->pRSM->m_DepthBuffer.Resource();
+        //  barrier 9 : flux
+        barriers[9] = barriers[5];
+        barriers[9].image = this->pRSM->m_EmissiveFlux.Resource();
+
+        //  barrier 10 : depth
+        barriers[10] = barriers[0];
+        barriers[10].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barriers[10].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barriers[10].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barriers[10].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        barriers[10].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        barriers[10].image = this->pRSM->m_DepthBuffer.Resource();
     }
 
     vkCmdPipelineBarrier(cmdBuf,
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, NULL, 0, NULL,
-        numBarriers, barriers);
+        5, barriers + 6);
 }
 
 void Renderer::barrier_A1(VkCommandBuffer cmdBuf)
@@ -1095,7 +1105,7 @@ void Renderer::barrier_A1(VkCommandBuffer cmdBuf)
 void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
 {
     //  transition images
-    const uint32_t numBarriers = 6;
+    const uint32_t numBarriers = 7;
     VkImageMemoryBarrier barriers[numBarriers];
     barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[0].pNext = NULL; 
@@ -1131,17 +1141,21 @@ void Renderer::barrier_GT_Cache_D(VkCommandBuffer cmdBuf)
         //  barrier 4 : emissive/flux
         barriers[4] = barriers[0];
         barriers[4].image = this->pGBuffer->m_EmissiveFlux.Resource();
+
+        //  barrier 5 : motion vector
+        barriers[5] = barriers[0];
+        barriers[5].image = this->pGBuffer->m_MotionVectors.Resource();
     }
 
     //  for D-target (HDR buffer)
     {
-        //  barrier 5 : HDR
-        barriers[5] = barriers[0];
-        barriers[5].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        //barriers[5].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; // ToDo : decomment when D-cache ready
-        barriers[5].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        //barriers[5].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; // ToDo : decomment when D-cache ready
-        barriers[5].image = this->pGBuffer->m_HDR.Resource(); 
+        //  barrier 6 : HDR
+        barriers[6] = barriers[0];
+        barriers[6].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        //barriers[6].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; // ToDo : decomment when D-cache ready
+        barriers[6].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        //barriers[6].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; // ToDo : decomment when D-cache ready
+        barriers[6].image = this->pGBuffer->m_HDR.Resource(); 
     }
 
     vkCmdPipelineBarrier(cmdBuf,

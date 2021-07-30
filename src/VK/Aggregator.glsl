@@ -30,7 +30,7 @@ layout (std140, binding = ID_Params) uniform Params
 };
 
 //  ToDo : find a way to dynamically change the format according to the input target
-layout (rgba16, binding = ID_Target) uniform image2D img_target;
+layout (rgba16f, binding = ID_Target) uniform image2D img_target;
 
 #ifdef ID_FX0
 layout (binding = ID_FX0) uniform sampler2D u_fx0;
