@@ -105,21 +105,33 @@ layout (std140, binding = ID_HitPosIrradiance) buffer HitPositionAndPackedIrradi
 #include "RGBEConversion.h"
 
 const float IOR = 1.33;
-const float criticalAngle = /*49*/49 * M_PI / 180;
 const float epsilon = 1e-4;
 
-//  random function
-//  ref : https://thebookofshaders.com/10/
-// float random (vec2 st) {
-//     return fract(sin(dot(st, vec2(12.9898,78.233))) * 43758.5453123);
-// }
+// random function
+// ref : https://thebookofshaders.com/10/
+float randFromCoord (vec2 st) {
+    return fract(sin(dot(st, vec2(12.9898,78.233))) * 43758.5453123);
+}
+
+// Exact, unpolarized Fresnel equation
+float fresnelUnpolarized(
+    float cosI, // cosIncident
+    float cosT, // cosTransmitted
+    float n1, // refractiveIndexIncident,
+    float n2 // refractiveIndexTransmitted
+)
+{
+    float rs = (n1 * cosI - n2 * cosT) / (n1 * cosI + n2 * cosT);
+    float rp = (n1 * cosT - n2 * cosI) / (n1 * cosT + n2 * cosI);
+    return 0.5f * (rs * rs + rp * rp);
+}
 
 //  retrieve the sample point from RSM and construct ray payload
 int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
 {
     //  retrieve sampling coordinate (texture space, not normalized yet)
-    vec2 samplingCoord = (texelFetch(u_samplingMap, ivec2(gl_LocalInvocationID.xy), 0).rg + gl_WorkGroupID.xy) * 
-                            ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
+    const vec2 localSamplingCoord = texelFetch(u_samplingMap, ivec2(gl_LocalInvocationID.xy), 0).rg;
+    vec2 samplingCoord = (localSamplingCoord + gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
     const ivec2 rsmDim = textureSize(u_rsmFlux, 0) / 2; // shadow map in 4 quarters 
     if (samplingCoord.x >= rsmDim.x || samplingCoord.y >= rsmDim.y)
         return 1; // out-of-bound coordinate
@@ -150,35 +162,33 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
         return 3;
 
     //  determine the direction of the ray be Fresnel's equation
-    const vec3 view = normalize(u_params.lights[rsmLightIndex].position.xyz - worldPos);
-    const float incidentAngle = acos(clamp(dot(normal, view), 0.0f, 1.0f));
-
-    //  for refracted rays
-    //  setting alpha cutoff to 70% (transparency (1-alpha) < 0.3 shall be trated as reflection instead)
     vec3 bounceDir;
-    if (fluxAlpha.w < 0.7f && incidentAngle < criticalAngle)
-    {
-        if (incidentAngle < epsilon)
-            bounceDir = -normal;
-        else
-        {
-            // ToDo : only works for light source above water. Fix it!!
-            float iorRatio = 1.0f / IOR; // air -> water
-            // float sin_bounceAngle = sin(incidentAngle) * iorRatio;
-            // float cos_bounceAngle = sqrt(1.0f - sin_bounceAngle * sin_bounceAngle);
 
-            // vec3 bitangent = normalize(cross(cross(view, normal), normal));
-            // bounceDir = sin_bounceAngle * bitangent + cos_bounceAngle * (-normal);
-            bounceDir = refract(-view, normal, iorRatio);
-        }
-    }
-    //  for reflected rays
-    else
+    const vec3 view = normalize(u_params.lights[rsmLightIndex].position.xyz - worldPos);
+
+    const float iorRatio = 1.0f / IOR; // air -> water
+    const vec3 refracted = refract(-view, normal, iorRatio);
+
+    // In the case of total internal reflection the refract() function
+    // returns (0,0,0) and Fresnel has to be 1.
+    float fresnel = 1.0f;
+    if (any(greaterThan(refracted, vec3(0)))) 
     {
-        // vec3 projView_normal = (dot(view, normal) / dot(normal, normal)) * normal;
-        // bounceDir = (projView_normal - view) * 2.0f + view;
-        bounceDir = reflect(-view, normal);
+        // Compute Fresnel using the Fresnel equations (not the Schlick
+        // approximation!) This is more precise, especially if the
+        // difference between the two indices of
+        // refraction is very small, and avoids a special case
+        const float cosIncident = dot(normal, view);
+        const float cosTransmitted = -dot(refracted, normal);
+
+        fresnel = fresnelUnpolarized(cosIncident, cosTransmitted, 1.0f, IOR);
     }
+
+    // random and see if we go for reflection or refraction
+    if (randFromCoord(localSamplingCoord) < fresnel) // reflection
+        bounceDir = reflect(-view, normal);
+    else // refraction
+        bounceDir = refracted;
 
     origin = worldPos;
     direction = bounceDir;
@@ -384,7 +394,7 @@ bool traceOnView(vec3 origin, vec3 direction, TransformParams viewParams, bool b
 }
 
 //  trace the ray through the depth map and decay the input power in-place. 
-//  return the hitpoint (transformed w/ z = depth), along with ray length (t) as w-elemeent.
+//  return the hitpoint (transformed w/ z = depth), along with normalized power (irradiance).
 vec4 trace(vec3 origin, vec3 direction, vec3 power)
 {
     vec3 hitPos = vec3(0);
@@ -457,7 +467,7 @@ void main()
     vec3 power;
     if (retrieveSample(origin, direction, power) != 0)
     {
-        out_hitPos_irradiance[writeIdx] = vec4(0); // if unreachable -> ray length = -1.0
+        out_hitPos_irradiance[writeIdx] = vec4(0);
         return;
     }
 
