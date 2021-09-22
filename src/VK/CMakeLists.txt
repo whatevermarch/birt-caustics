@@ -9,7 +9,9 @@ set(headers
 	IndirectLighting.h
 	Aggregator.h
 	Caustics.h
-	SVGF.h)
+	SVGF.h
+	Fresnel.h
+	ISRTCommon.h)
 source_group("Header Files" FILES ${headers})
 
 set(sources
@@ -19,7 +21,8 @@ set(sources
 	IndirectLighting.cpp
 	Aggregator.cpp
 	Caustics.cpp
-	SVGF.cpp)
+	SVGF.cpp
+	Fresnel.cpp)
 source_group("Source Files" FILES ${sources})
 
 set(shaders
@@ -33,7 +36,10 @@ set(shaders
 	SVGFEdgeStoppingFunc.h
 	SVGFReproject.glsl
 	SVGFStabilityBoost.glsl
-	SVGFAtrousWT.glsl)
+	SVGFAtrousWT.glsl
+	PathTracer.glsl
+	ImageSpaceRT.h
+	TransformParams.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
 

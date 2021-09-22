@@ -395,7 +395,7 @@ void DirectLighting::createPipeline(const DefineList* defines)
 
     VkPipelineColorBlendAttachmentState att_state = {};
     att_state.colorWriteMask = 0xf;
-    att_state.blendEnable = VK_TRUE; // change to false when aggregator is utilized
+    att_state.blendEnable = VK_FALSE; // VK_TRUE;
     att_state.alphaBlendOp = VK_BLEND_OP_ADD;
     att_state.colorBlendOp = VK_BLEND_OP_ADD;
     att_state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;

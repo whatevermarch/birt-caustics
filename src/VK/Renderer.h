@@ -2,6 +2,7 @@
 
 #include "DirectLighting.h"
 #include "Caustics.h"
+#include "Fresnel.h"
 //#include "IndirectLighting.h"
 #include "Aggregator.h"
 
@@ -63,9 +64,10 @@ protected:
 	GltfPbrPass* pRSMPass = nullptr;
 
 	//	render target caches
-	Texture cache_rsmDepth, cache_gbufDepth;
+	Texture cache_rsmDepth, cache_gbufDepth, cache_opaque;
 	VkImageView cache_rsmDepthSRV = VK_NULL_HANDLE,
-		cache_gbufDepthSRV = VK_NULL_HANDLE;
+		cache_gbufDepthSRV = VK_NULL_HANDLE,
+		cache_opaqueSRV = VK_NULL_HANDLE;
 
 	//	caches mipmap
 	DownSamplePS cache_rsmDepthMipmap, cache_gbufDepthMipmap;
@@ -74,6 +76,7 @@ protected:
 	DirectLighting* dLighting = nullptr;
 
 	//	GI effects
+	Fresnel* fresnel = nullptr;
 	Caustics* caustics = nullptr;
 	//IndirectLighting* iLighting = nullptr;
 
@@ -83,7 +86,7 @@ protected:
 	GBufferRenderPass rp_skyDome;
 
 	//	post-processing handle
-	Aggregator aggregator_1; //, aggregator_2;
+	Aggregator aggregator_1, aggregator_2;
 	ToneMapping toneMapping;
 	TAA tAA;
 	

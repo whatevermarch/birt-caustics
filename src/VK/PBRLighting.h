@@ -301,5 +301,8 @@ vec3 doPbrLighting(vec3 worldPos, vec3 normal, vec3 diffuseColor, vec3 specularC
     }
 #endif
 
+    //  workaround : add more ambient light to Cornell Box
+    intensity += 0.07f * diffuseColor;
+
     return intensity;
 }

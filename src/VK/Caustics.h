@@ -1,25 +1,16 @@
 #pragma once
 
 #include "SVGF.h"
+#include "ISRTCommon.h"
 
 class Caustics
 {
 public:
 
-    struct Transform
-    {
-        XMMATRIX view;
-        XMVECTOR position;
-        float invTanHalfFovH;
-        float invTanHalfFovV;
-        float nearPlane;
-        float farPlane;
-    };
-
     struct Constants
     {
-        Caustics::Transform camera;
-        Caustics::Transform lights[4]; // we have 4 quarters of RSM
+        ISRTTransform camera;
+        ISRTTransform lights[4]; // we have 4 quarters of RSM
 
         float samplingMapScale = 2.0f;
         float rayThickness_xy;
