@@ -1,7 +1,11 @@
 #pragma once
 
+#include "CausticsMapping.h"
+
 #include "SVGF.h"
 #include "ISRTCommon.h"
+
+#define USE_BIRT
 
 class Caustics
 {
@@ -34,11 +38,28 @@ public:
         VkImageView gbufDepthOpaque0SRV, Texture* pGBufDepthOpaque1N, int mipCount);
     void OnDestroyWindowSizeDependentResources();
 
+    //  if BIRT is not utilized, these two methods have no effect.
+    void registerScene(GLTFTexturesAndBuffers* pGLTFTexturesAndBuffers)
+    {
+#ifndef USE_BIRT
+        this->causticsMap.registerScene(pGLTFTexturesAndBuffers);
+#endif
+    }
+    void deregisterScene()
+    {
+#ifndef USE_BIRT
+        this->causticsMap.deregisterScene();
+#endif
+    }
+
     Texture* GetTexture() { return &this->pm_irradianceMap; }
     const Texture* GetTexture() const { return &this->pm_irradianceMap; }
     VkImageView GetTextureView() {return this->pm_irradianceMapSRV; }
 
 	void Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, const Caustics::Constants& constants);
+
+    void setGPUTimeStamps(GPUTimestamps* pGPUTimeStamps)
+    { this->pGPUTimeStamps = pGPUTimeStamps; }
 
 protected:
 
@@ -47,13 +68,15 @@ protected:
     ResourceViewHeaps* pResourceViewHeaps = nullptr;
     DynamicBufferRing* pDynamicBufferRing = nullptr;
 
-    GBuffer* pGBuffer = nullptr;
+    GPUTimestamps* pGPUTimeStamps = nullptr;
 
-    PostProcCS photonTracer;
-    //  ... and denoiser (as building block)
+    GBuffer* pGBuffer = nullptr;
 
     uint32_t              rsmWidth = 0, rsmHeight = 0;
     uint32_t              outWidth = 0, outHeight = 0;
+
+    PostProcCS photonTracer;
+
     int                   mipCount_rsm = 0;
     int                   mipCount_gbuf = 0;
 
@@ -61,6 +84,7 @@ protected:
     //
     Texture               samplingMap;
     VkImageView           samplingMapSRV = VK_NULL_HANDLE;
+    int                   samplingSeed = 0;
 
     VkImageView           rsmDepthOpaque1NSRV = VK_NULL_HANDLE;
     VkImageView           gbufDepthOpaque1NSRV = VK_NULL_HANDLE;
@@ -71,6 +95,7 @@ protected:
 
     VkSampler             sampler_default = VK_NULL_HANDLE;
     VkSampler             sampler_depth = VK_NULL_HANDLE;
+    VkSampler             sampler_noise = VK_NULL_HANDLE;
 
     VkDescriptorSet       descriptorSet;
     VkDescriptorSetLayout descriptorSetLayout;
@@ -95,5 +120,11 @@ protected:
     SVGF denoiser;
 
     void generateSamplingPoints(UploadHeap& uploadHeap);
+
+    //  alternate algorithm for caustics
+    //  WARNING : just to evaluete ONLY!!
+#ifndef USE_BIRT
+    CausticsMapping       causticsMap;
+#endif
 };
 

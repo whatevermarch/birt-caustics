@@ -54,6 +54,7 @@ protected:
 
     Texture               samplingMap;
     VkImageView           samplingMapSRV = VK_NULL_HANDLE;
+    int                   samplingSeed = 0;
 
     VkImageView           gbufDepthOpaque1NSRV = VK_NULL_HANDLE;
 
@@ -62,6 +63,7 @@ protected:
 
     VkSampler             sampler_default = VK_NULL_HANDLE;
     VkSampler             sampler_depth = VK_NULL_HANDLE;
+    VkSampler             sampler_noise = VK_NULL_HANDLE;
 
     PostProcCS pathTracer;
 

@@ -13,9 +13,10 @@ const bool VALIDATION_ENABLED = false;
 
 #define RESOURCES_PATH "..\\res\\"
 
-#define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\"
-#define SCENE_FILENAME "CornellBox_Water.gltf"
-
+#define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\test\\"
+#define SCENE_FILENAME "test_x1.gltf" 
+// change to "test_x4" for testing more precise Caustics Mapping.
+// DON'T FORGET!! to change the vertices count in CausticsMapping.cpp::Draw() accordingly.
 
 class App : public FrameworkWindows
 {
@@ -58,6 +59,13 @@ protected:
     //  time (ms.)
     double deltaTime;
     double lastFrameTime;
+
+    //  caustics profiling
+    //  workaround: target only one unit
+    float profTime = 0;
+    float accumProfTime = 0;
+    unsigned int accumCount = 0;
+    double accumInSec = 0;
 };
 
 
@@ -245,6 +253,35 @@ void App::OnRender()
         if (ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::SliderFloat("D/I Contribution", &this->renderer_state.DIWeight, 0.f, 1.f);
+        }
+
+        if (ImGui::CollapsingHeader("Profiler", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            //  workaround: only target caustics
+            const int causticsTimeIndex = 3;
+
+            const std::vector<TimeStamp>& timeStamps = this->renderer->getTimeStamps();
+            if (timeStamps.size() > causticsTimeIndex + 1)
+            {
+                this->accumInSec += this->deltaTime;
+                this->accumProfTime += timeStamps[causticsTimeIndex].m_microseconds;
+                this->accumCount += 1;
+
+                if (this->accumInSec >= 1000.0)
+                {
+                    this->profTime = this->accumProfTime / this->accumCount;
+
+                    this->accumInSec = 0;
+                    this->accumProfTime = 0;
+                    this->accumCount = 0;
+                }
+
+                ImGui::Text("%-22s: %7.1f", timeStamps[causticsTimeIndex].m_label.c_str(), this->profTime);
+                //for (uint32_t i = 0; i < timeStamps.size(); i++)
+                //{
+                //    ImGui::Text("%-22s: %7.1f", timeStamps[i].m_label.c_str(), timeStamps[i].m_microseconds);
+                //}
+            }
         }
 
         ImGui::End();

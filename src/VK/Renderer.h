@@ -26,6 +26,9 @@ public:
 	int loadScene(GLTFCommon* pLoader, int stage);
 	void unloadScene();
 
+	const std::vector<TimeStamp>& getTimeStamps() const
+	{ return this->timeStampRecords; }
+
 protected:
 
 	//	pointer to device
@@ -37,6 +40,8 @@ protected:
 	VkViewport viewport;
 	VkRect2D rectScissor;
 
+	std::vector<TimeStamp> timeStampRecords;
+
 	//  GUI (view component in MVC, 
 	//	controller(C) will be managed in frontend App class)
 	GUI gui;
@@ -47,7 +52,7 @@ protected:
 	ResourceViewHeaps resViewHeaps;	// descriptor sets
 	CommandListRing cmdBufferRing;	// command buffers
 	UploadHeap uploadHeap;			// staging buffers
-	// GPUTimestamps gTimeStamps;
+	GPUTimestamps gTimeStamps;
 	AsyncPool asyncPool;
 
 	//	resources handles

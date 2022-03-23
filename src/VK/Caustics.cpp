@@ -21,6 +21,16 @@ void Caustics::OnCreate(
 	this->rsmWidth = pRSM->m_EmissiveFlux.GetWidth() / 2;
 	this->rsmHeight = pRSM->m_EmissiveFlux.GetHeight() / 2;
 
+	//	define render pass
+	VkAttachmentDescription att_desc[1];
+	AttachClearBeforeUse(
+		VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
+		(VkSampleCountFlagBits)1,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		&att_desc[0]);
+	this->pm_renderPass = CreateRenderPassOptimal(this->pDevice->GetDevice(), 1, att_desc, nullptr);
+#ifdef USE_BIRT
 	//	define intermediate buffer storing photon tracing results
 	{
 		const uint32_t hitpointBufferMemSize = MAX_PHOTON_COUNT * sizeof(float) * 4;
@@ -33,36 +43,26 @@ void Caustics::OnCreate(
 	//	photon tracing pass
 	{
 		//  create default sampler
-		{
-			VkSamplerCreateInfo info = {};
-			info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-			info.magFilter = VK_FILTER_LINEAR;
-			info.minFilter = VK_FILTER_LINEAR;
-			info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-			info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			info.minLod = -1000;
-			info.maxLod = 1000;
-			info.maxAnisotropy = 1.0f;
-			VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_default);
-			assert(res == VK_SUCCESS);
-		}
+		this->sampler_default = CreateSampler(pDevice->GetDevice(), true);
 
 		//  create sampler for depth mipmap
+		this->sampler_depth = CreateSampler(pDevice->GetDevice(), false);
+
+		//	create sampler for noise texture (sampling map)
 		{
 			VkSamplerCreateInfo info = {};
 			info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 			info.magFilter = VK_FILTER_NEAREST;
 			info.minFilter = VK_FILTER_NEAREST;
 			info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-			info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 			info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			info.unnormalizedCoordinates = VK_TRUE;
 			info.minLod = -1000;
 			info.maxLod = 1000;
 			info.maxAnisotropy = 1.0f;
-			VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_depth);
+			VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_noise);
 			assert(res == VK_SUCCESS);
 		}
 
@@ -75,7 +75,7 @@ void Caustics::OnCreate(
 		this->createPhotonTracerDescriptors(&defines);
 
 		// Use helper class to create the compute pass
-		this->photonTracer.OnCreate(this->pDevice, "PhotonTracer.glsl", "main", "", this->descriptorSetLayout, 0, 0, 0, &defines);
+		this->photonTracer.OnCreate(this->pDevice, "PhotonTracer.glsl", "main", "", this->descriptorSetLayout, 0, 0, 0, &defines, sizeof(int));
 
 		//	create image view for rsm depth (opaque)
 		this->mipCount_rsm = mipCount;
@@ -83,7 +83,7 @@ void Caustics::OnCreate(
 
 		//	update desc set (except gbuf depth)
 		this->pDynamicBufferRing->SetDescriptorSet(0, sizeof(Caustics::Constants), this->descriptorSet);
-		SetDescriptorSet(this->pDevice->GetDevice(), 1, this->samplingMapSRV, &this->sampler_default, this->descriptorSet);
+		SetDescriptorSet(this->pDevice->GetDevice(), 1, this->samplingMapSRV, &this->sampler_noise, this->descriptorSet);
 
 		SetDescriptorSet(this->pDevice->GetDevice(), 2, pRSM->m_WorldCoordSRV, &this->sampler_default, this->descriptorSet);
 		SetDescriptorSet(this->pDevice->GetDevice(), 3, pRSM->m_NormalBufferSRV, &this->sampler_default, this->descriptorSet);
@@ -111,27 +111,28 @@ void Caustics::OnCreate(
 	{
 		DefineList defines;
 
-		// Create a Render pass that accounts for blending
-        //
-		VkAttachmentDescription att_desc[1];
-		AttachClearBeforeUse(
-			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
-			(VkSampleCountFlagBits)1,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			&att_desc[0]);
-        this->pm_renderPass = CreateRenderPassOptimal(this->pDevice->GetDevice(), 1, att_desc, nullptr);
-
 		// Create Pipeline
 		this->createPhotonMapperPipeline(defines);
 	}
 
 	//	denoiser
 	this->denoiser.OnCreate(pDevice, pResourceViewHeaps, pDynamicBufferRing);
+#else
+	//	use caustics mapping instead
+	this->causticsMap.OnCreate(
+		pDevice, pUploadHeap,
+		pResourceViewHeaps,
+		pDynamicBufferRing,
+		this->rsmWidth, this->rsmHeight,
+		pRSM, rsmDepthOpaque0SRV,
+		this->pm_renderPass
+	);
+#endif
 }
 
 void Caustics::OnDestroy()
 {
+#ifdef USE_BIRT
 	//	denoiser
 	this->denoiser.OnDestroy();
 
@@ -139,8 +140,6 @@ void Caustics::OnDestroy()
 	{
 		vkDestroyPipeline(this->pDevice->GetDevice(), this->pm_pipeline, nullptr);
 		vkDestroyPipelineLayout(this->pDevice->GetDevice(), this->pm_pipelineLayout, nullptr);
-
-		vkDestroyRenderPass(this->pDevice->GetDevice(), this->pm_renderPass, NULL);
 	}
 
 	//	photon tracing pass
@@ -157,13 +156,20 @@ void Caustics::OnDestroy()
 
 		vkDestroySampler(this->pDevice->GetDevice(), this->sampler_default, nullptr);
 		vkDestroySampler(this->pDevice->GetDevice(), this->sampler_depth, nullptr);
+		vkDestroySampler(this->pDevice->GetDevice(), this->sampler_noise, nullptr);
 	}
 
 	this->hitpointBuffer.OnDestroy();
+#else
+	this->causticsMap.OnDestroy();
+#endif
+	vkDestroyRenderPass(this->pDevice->GetDevice(), this->pm_renderPass, NULL);
 
 	this->pDevice = nullptr;
 	this->pResourceViewHeaps = nullptr;
 	this->pDynamicBufferRing = nullptr;
+
+	this->pGPUTimeStamps = nullptr;
 }
 
 void Caustics::OnCreateWindowSizeDependentResources(
@@ -176,6 +182,34 @@ void Caustics::OnCreateWindowSizeDependentResources(
 
 	this->pGBuffer = pGBuffer;
 
+	//	photon map (point rendering) pass
+	{
+		//	initialize render target
+		this->pm_irradianceMap.InitRenderTarget(
+			this->pDevice,
+			this->outWidth, this->outHeight,
+			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+			false,
+			"Caustics Output"
+		);
+		this->pm_irradianceMap.CreateSRV(&this->pm_irradianceMapSRV);
+
+		//	create framebuffer
+		std::vector<VkImageView> attachments = {
+			this->pm_irradianceMapSRV
+		};
+
+		this->pm_framebuffer = CreateFrameBuffer(
+			this->pDevice->GetDevice(),
+			this->pm_renderPass,
+			&attachments,
+			this->outWidth, this->outHeight
+		);
+	}
+#ifdef USE_BIRT
 	//	photon tracing pass
 	{
 		//	create image view for gbuf depth (opaque)
@@ -188,45 +222,32 @@ void Caustics::OnCreateWindowSizeDependentResources(
 		SetDescriptorSet(this->pDevice->GetDevice(), 10, pGBuffer->m_NormalBufferSRV, &this->sampler_default, this->descriptorSet);
 	}
 
-	//	photon map (point rendering) pass
-	{
-		//	initialize render target
-		this->pm_irradianceMap.InitRenderTarget(
-            this->pDevice,
-            this->outWidth, this->outHeight,
-			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
-            VK_SAMPLE_COUNT_1_BIT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
-            false,
-            "Caustics Output"
-        );
-        this->pm_irradianceMap.CreateSRV(&this->pm_irradianceMapSRV);
-
-		//	create framebuffer
-		std::vector<VkImageView> attachments = {
-            this->pm_irradianceMapSRV
-        };
-
-        this->pm_framebuffer = CreateFrameBuffer(
-            this->pDevice->GetDevice(),
-            this->pm_renderPass,
-            &attachments,
-            this->outWidth, this->outHeight
-        );
-	}
-
 	//	denoiser
 	this->denoiser.OnCreateWindowSizeDependentResources(
 		this->outWidth, this->outHeight,
 		&this->pm_irradianceMap, this->pm_irradianceMapSRV,
 		gbufDepthOpaque0SRV, pGBuffer);
+#else
+	this->causticsMap.OnCreateWindowSizeDependentResources(
+		Width, Height,
+		pGBuffer, gbufDepthOpaque0SRV,
+		this->pm_framebuffer);
+#endif
 }
 
 void Caustics::OnDestroyWindowSizeDependentResources()
 {
+#ifdef USE_BIRT
 	//	denoiser
 	this->denoiser.OnDestroyWindowSizeDependentResources();
+
+	//	photon tracing pass
+	{
+		vkDestroyImageView(this->pDevice->GetDevice(), this->gbufDepthOpaque1NSRV, nullptr);
+	}
+#else
+	this->causticsMap.OnDestroyWindowSizeDependentResources();
+#endif
 
 	//	photon map (point rendering) pass
 	{
@@ -240,16 +261,16 @@ void Caustics::OnDestroyWindowSizeDependentResources()
 		this->pm_irradianceMap.OnDestroy();
 	}
 
-	//	photon tracing pass
-	{
-		vkDestroyImageView(this->pDevice->GetDevice(), this->gbufDepthOpaque1NSRV, nullptr);
-	}
+	this->pGBuffer = nullptr;
+	this->outWidth = 0;
+	this->outHeight = 0;
 }
 
 void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, const Caustics::Constants& constants)
 {
 	SetPerfMarkerBegin(commandBuffer, "Caustics");
-
+#ifdef USE_BIRT
+	//	Opt.1 : BIRT Caustics
 	//  update constants
 	VkDescriptorBufferInfo descInfo_constants;
 	{
@@ -269,7 +290,10 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 
 		//  dispatch
 		//
-		this->photonTracer.Draw(commandBuffer, &descInfo_constants, this->descriptorSet, numBlocks_x, numBlocks_y, 1);
+		this->photonTracer.Draw(commandBuffer, &descInfo_constants, this->descriptorSet, numBlocks_x, numBlocks_y, 1, &this->samplingSeed);
+		this->samplingSeed = (this->samplingSeed + 1) % 8; // ToDo: need variable for 8
+
+		this->pGPUTimeStamps->GetTimeStamp(commandBuffer, "BIRT: Photon Tracing");
 
 		SetPerfMarkerEnd(commandBuffer);
 	}
@@ -315,8 +339,11 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 
 		//	end render pass
 		vkCmdEndRenderPass(commandBuffer);
+
+		this->pGPUTimeStamps->GetTimeStamp(commandBuffer, "BIRT: Photon Mapping");
 	}
 
+	//	denoising
 	{
 		SVGF::Constants svgfConst;
 		svgfConst.alphaColor = 0.2f;
@@ -328,8 +355,46 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 		svgfConst.sigmaLuminance = 4.f;
 
 		this->denoiser.Draw(commandBuffer, svgfConst);
-	}
 
+		this->pGPUTimeStamps->GetTimeStamp(commandBuffer, "BIRT: Denoising");
+	}
+#else
+	//	Opt.2 : Caustics Mapping
+	{
+		//	construct projection matrix
+		//	ref : DirectXMathMatrix.inl -> XMMatrixPerspectiveFovRH()
+		/*XMMATRIX proj{};
+		XMFLOAT4 rowElems{};
+		const float nearZ = constants.lights[0].nearPlane;
+		const float farZ = constants.lights[0].farPlane;
+		const float fRange = farZ / (nearZ - farZ);
+
+		rowElems = { constants.lights[0].invTanHalfFovH, 0, 0, 0 };
+		proj.r[0] = XMLoadFloat4(&rowElems);
+		rowElems = { 0, constants.lights[0].invTanHalfFovV, 0, 0 };
+		proj.r[1] = XMLoadFloat4(&rowElems);
+		rowElems = { 0, 0, fRange, -1 };
+		proj.r[2] = XMLoadFloat4(&rowElems);
+		rowElems = { 0, 0, fRange * nearZ, 0 };
+		proj.r[3] = XMLoadFloat4(&rowElems);*/
+
+		const float nearZ = constants.lights[0].nearPlane;
+		const float farZ = constants.lights[0].farPlane;
+		const float fRange = farZ / (nearZ - farZ);
+
+		//	setup constants
+		CausticsMapping::Constants cmConst;
+		cmConst.lightView = constants.lights[0].view;
+		cmConst.lightInvTanHalfFovH = constants.lights[0].invTanHalfFovH;
+		cmConst.lightInvTanHalfFovV = constants.lights[0].invTanHalfFovV;
+		cmConst.lightFRange = fRange;
+		cmConst.lightNearZ = nearZ;
+
+		//	For cmConst.world -> it will be filled inside the CausticsMapping::Draw method.
+
+		this->causticsMap.Draw(commandBuffer, renderArea, cmConst);
+	}
+#endif
 	SetPerfMarkerEnd(commandBuffer);
 }
 

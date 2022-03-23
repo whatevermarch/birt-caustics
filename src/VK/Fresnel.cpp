@@ -16,36 +16,26 @@ void Fresnel::OnCreate(
 	this->pDynamicBufferRing = pDynamicBufferRing;
 
 	//  create default sampler
-	{
-		VkSamplerCreateInfo info = {};
-		info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		info.magFilter = VK_FILTER_LINEAR;
-		info.minFilter = VK_FILTER_LINEAR;
-		info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-		info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		info.minLod = -1000;
-		info.maxLod = 1000;
-		info.maxAnisotropy = 1.0f;
-		VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_default);
-		assert(res == VK_SUCCESS);
-	}
+	this->sampler_default = CreateSampler(pDevice->GetDevice(), true);
 
 	//  create sampler for depth mipmap
+	this->sampler_depth = CreateSampler(pDevice->GetDevice(), false);
+
+	//	create sampler for noise texture (sampling map)
 	{
 		VkSamplerCreateInfo info = {};
 		info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 		info.magFilter = VK_FILTER_NEAREST;
 		info.minFilter = VK_FILTER_NEAREST;
 		info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-		info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 		info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		info.unnormalizedCoordinates = VK_TRUE;
 		info.minLod = -1000;
 		info.maxLod = 1000;
 		info.maxAnisotropy = 1.0f;
-		VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_depth);
+		VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &this->sampler_noise);
 		assert(res == VK_SUCCESS);
 	}
 
@@ -58,11 +48,12 @@ void Fresnel::OnCreate(
 	this->createDescriptors(defines);
 
 	// Use helper class to create the compute pass
-	this->pathTracer.OnCreate(this->pDevice, "PathTracer.glsl", "main", "", this->descriptorSetLayout, 0, 0, 0, &defines);
+	this->pathTracer.OnCreate(this->pDevice, "PathTracer.glsl", "main", "", this->descriptorSetLayout, 
+		0, 0, 0, &defines, sizeof(int));
 
 	//	update desc set (except gbuf depth)
 	this->pDynamicBufferRing->SetDescriptorSet(0, sizeof(Fresnel::Constants), this->descriptorSet);
-	SetDescriptorSet(this->pDevice->GetDevice(), 1, this->samplingMapSRV, &this->sampler_default, this->descriptorSet);
+	SetDescriptorSet(this->pDevice->GetDevice(), 1, this->samplingMapSRV, &this->sampler_noise, this->descriptorSet);
 
 	//	denoiser
 	this->denoiser.OnCreate(pDevice, pResourceViewHeaps, pDynamicBufferRing);
@@ -82,6 +73,7 @@ void Fresnel::OnDestroy()
 
 	vkDestroySampler(this->pDevice->GetDevice(), this->sampler_default, nullptr);
 	vkDestroySampler(this->pDevice->GetDevice(), this->sampler_depth, nullptr);
+	vkDestroySampler(this->pDevice->GetDevice(), this->sampler_noise, nullptr);
 }
 
 void Fresnel::OnCreateWindowSizeDependentResources(
@@ -123,7 +115,7 @@ void Fresnel::OnCreateWindowSizeDependentResources(
 		SetDescriptorSet(this->pDevice->GetDevice(), 6, this->gbufDepthOpaque1NSRV, &this->sampler_depth, this->descriptorSet);
 
 		//	create image view for opaque-only final color
-		SetDescriptorSet(this->pDevice->GetDevice(), 7, opaqueHDRSRV, &this->sampler_default, this->descriptorSet);
+		SetDescriptorSet(this->pDevice->GetDevice(), 7, opaqueHDRSRV, &this->sampler_depth, this->descriptorSet);
 
 		{
 			VkDescriptorImageInfo imgInfo;
@@ -202,7 +194,8 @@ void Fresnel::Draw(VkCommandBuffer commandBuffer,
 
 		//  dispatch
 		//
-		this->pathTracer.Draw(commandBuffer, &descInfo_constants, this->descriptorSet, numBlocks_x, numBlocks_y, 1);
+		this->pathTracer.Draw(commandBuffer, &descInfo_constants, this->descriptorSet, numBlocks_x, numBlocks_y, 1, &this->samplingSeed);
+		this->samplingSeed = (this->samplingSeed + 1) % 8; // ToDo: need variable for 8
 
 		SetPerfMarkerEnd(commandBuffer);
 	}

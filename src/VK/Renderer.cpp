@@ -39,7 +39,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 	this->uploadHeap.OnCreate(pDevice, uploadHeapMemSize); // initialize an upload heap (uses suballocation for faster results)
 
 	// initialize the GPU time stamps module
-	// this->gTimeStamps.OnCreate(pDevice, backBufferCount);
+    this->gTimeStamps.OnCreate(pDevice, backBufferCount);
 
 	//	setup pass resources
     //
@@ -197,6 +197,8 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
             this->cache_rsmDepthSRV,
             this->cache_rsmDepthMipmap.GetTexture(),
             static_cast<int>(std::log2(shadowmapSize)) - 1);
+
+        this->caustics->setGPUTimeStamps(&this->gTimeStamps);
     }
     //
     //  pass 2.4 : Reflection / Refraction (Fresnel)
@@ -291,7 +293,7 @@ void Renderer::OnDestroy()
     delete this->pRSM;
     this->pRSM = nullptr;
 
-    // this->gTimeStamps.OnDestroy();
+    this->gTimeStamps.OnDestroy();
     this->uploadHeap.OnDestroy();
     this->cmdBufferRing.OnDestroy();
     this->resViewHeaps.OnDestroy();
@@ -446,6 +448,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         assert(res == VK_SUCCESS);
     }
 
+    //  start profiler
+    this->gTimeStamps.OnBeginFrame(cmdBuf1, &this->timeStampRecords);
+    
     //  seed TAA
     static uint32_t seed;
     pCamera->SetProjectionJitter(this->width, this->height, seed);
@@ -641,6 +646,8 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
 
         //this->iLighting->Draw(cmdBuf1, &this->rectScissor, ACTIVATE_ILIGHT);
 
+        this->gTimeStamps.GetTimeStamp(cmdBuf1, "Preliminaries");
+
         //  pass 2.3 : Caustics
         //
         Caustics::Constants causticsConstants{};
@@ -672,6 +679,8 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         causticsConstants.lights[rsmIndex].farPlane = 100.f;
 
         this->caustics->Draw(cmdBuf1, this->rectScissor, causticsConstants);
+
+        //this->gTimeStamps.GetTimeStamp(cmdBuf1, "Caustics");
     }
 
     this->barrier_A1(cmdBuf1); ////////////////////////////////////////////////////////////////////////////////////////////
@@ -830,6 +839,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     //  end render pass
     vkCmdEndRenderPass(cmdBuf2);
 
+    //  stop profiler
+    this->gTimeStamps.OnEndFrame();
+
     //  submit cmd buffer for presenting
     {
         VkResult res = vkEndCommandBuffer(cmdBuf2);
@@ -920,6 +932,12 @@ int Renderer::loadScene(GLTFCommon* pLoader, int stage)
     }
     else if (stage == 4)
     {
+        Profile p("Caustics->registerScene");
+
+        this->caustics->registerScene(this->res_scene);
+    }
+    else if (stage == 5)
+    {
         Profile p("Flush");
 
         this->sBufferPool.UploadData(this->uploadHeap.GetCommandList());
@@ -939,6 +957,11 @@ int Renderer::loadScene(GLTFCommon* pLoader, int stage)
 void Renderer::unloadScene()
 {
     this->pDevice->GPUFlush();
+
+    if (this->caustics)
+    {
+        this->caustics->deregisterScene();
+    }
 
     if (this->pGltfPbrPass)
     {

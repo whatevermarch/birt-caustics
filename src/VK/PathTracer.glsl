@@ -15,6 +15,11 @@ layout (local_size_x = 16, local_size_y = 16) in;
 //  set 0 : input data
 //--------------------------------------------------------------------------------------
 
+layout (push_constant) uniform pushConstants
+{
+    layout (offset = 0) int seed;
+};
+
 #include "TransformParams.glsl"
 
 struct SSRParams
@@ -70,23 +75,43 @@ ivec2 getRSMDepthSize(int mipLevel)
 const float IOR = 1.33;
 const float epsilon = 1e-4;
 
+vec2 sampleNoise()
+{
+    const int offset_x[4] = {1, 0, -1, 0};
+    const int offset_y[4] = {0, -1, 0, 1};
+
+    vec2 coord = gl_LocalInvocationID.xy + 0.5f;
+
+    const int seed_x = int(mod(seed, 4));
+    coord.x += offset_x[seed_x];
+    coord.y += offset_y[seed_x];
+    const float noise_x = texture(u_samplingMap, coord).r;
+
+    const int seed_y = int(mod(seed_x + 1, 4));
+    coord.x += offset_x[seed_y];
+    coord.y += offset_y[seed_y];
+    const float noise_y = texture(u_samplingMap, coord).g;
+
+    return (seed / 4 < 1) ? vec2(noise_x, noise_y) : vec2(noise_y, noise_x);
+}
+
 //  retrieve the sample point from RSM and construct ray payload
 int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
 {
     //  retrieve sampling coordinate (texture space, not normalized yet)
-    const vec2 localSamplingCoord = texelFetch(u_samplingMap, ivec2(gl_LocalInvocationID.xy), 0).rg;
-    vec2 samplingCoord = (localSamplingCoord + gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
+    const vec2 localSamplingCoord = sampleNoise();
+    const vec2 samplingCoord = (localSamplingCoord + gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
     const ivec2 gbufDim = textureSize(u_gbufSpecular, 0);
     if (samplingCoord.x >= gbufDim.x || samplingCoord.y >= gbufDim.y)
         return 1; // out-of-bound coordinate
 
     //  normalize coordinate
-    samplingCoord /= uvec2(gbufDim.x, gbufDim.y);
+    const vec2 normSamplingCoord = samplingCoord / uvec2(gbufDim.x, gbufDim.y);
 
     //  sample ray payload
-    const vec3 worldPos = texture(u_gbufWorldCoord, samplingCoord).rgb;
-    const vec3 normal = texture(u_gbufNormal, samplingCoord).rgb * 2.0f - 1.0f;
-    const vec4 specularRoughness = texture(u_gbufSpecular, samplingCoord).rgba;
+    const vec3 worldPos = texture(u_gbufWorldCoord, normSamplingCoord).rgb;
+    const vec3 normal = texture(u_gbufNormal, normSamplingCoord).rgb * 2.0f - 1.0f;
+    const vec4 specularRoughness = texture(u_gbufSpecular, normSamplingCoord).rgba;
 
     //  setting roughness cutoff to 30% (perceptualRoughness > 0.3 shall not pass)
     if (specularRoughness.a > 0.3f || any(lessThanEqual(specularRoughness.rgb, vec3(0.04))))
@@ -103,7 +128,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
     // In the case of total internal reflection the refract() function
     // returns (0,0,0) and Fresnel has to be 1.
     float fresnel = 1.0f;
-    if (any(greaterThan(refracted, vec3(0)))) 
+    if (length(refracted) >= epsilon) 
     {
         // Compute Fresnel using the Fresnel equations (not the Schlick
         // approximation!) This is more precise, especially if the
@@ -116,14 +141,16 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
     }
 
     // random and see if we go for reflection or refraction
-    if (randFromCoord(localSamplingCoord) < fresnel) // reflection
+    if (randFromCoord(samplingCoord) < fresnel) // reflection
         bounceDir = reflect(-view, normal);
     else // refraction
         bounceDir = refracted;
 
+    //bounceDir = refracted;
+
     origin = worldPos;
     direction = bounceDir;
-    texCoord = samplingCoord;
+    texCoord = normSamplingCoord;
 
     return 0;
 }
@@ -139,11 +166,12 @@ vec4 trace(vec3 origin, vec3 direction)
     float t;
     bHit = traceOnView(
             origin, direction, 
-            u_params.camera, true, u_params.tMax, u_params.rayThickness_z,
+            u_params.camera, true, u_params.tMax/*, u_params.rayThickness_z*/,
             t, hitCoord);
     
     //  sampling color from the last hit coordinate
     const vec3 color = bHit ? texture(u_backColor, hitCoord).rgb : vec3(0);
+    //const vec3 color = bHit ? texture(u_backColor, hitCoord).rgb : vec3(1,0,0);
 
     return vec4(color, 1);
 }
@@ -159,6 +187,16 @@ void main()
 
     //  trace through depth map
     vec4 color = trace(origin, direction);
+    //vec4 color = vec4((direction + 1.0f) / 2.0f, 1.0f);
+    // const vec4 o = u_params.camera.view * vec4(origin, 1.0f);
+    // const vec4 d = u_params.camera.view * vec4(direction, 0.0f);
+    // const vec4 r = o + d * 100.0f;
+    // const vec2 pv_xy = vec2(u_params.camera.invTanHalfFovH, u_params.camera.invTanHalfFovV);
+    // const vec2 p_o = o.xy * pv_xy / (-o.z);
+    // const vec2 p_r = r.xy * pv_xy / (-r.z);
+    // vec2 move = p_r - p_o;
+    // move.y = -move.y;
+    // vec4 color = length(move) != 0 ? vec4((normalize(move) + 1.0f) / 2.0f, 0.0f, 1.0f) : vec4(0);
 
     //  ToDo : transform origin point to projection space ans store in image buffer.
     imageStore(img_target, ivec2(texCoord * textureSize(u_gbufSpecular, 0)), color);

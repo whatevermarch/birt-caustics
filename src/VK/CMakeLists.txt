@@ -11,7 +11,8 @@ set(headers
 	Caustics.h
 	SVGF.h
 	Fresnel.h
-	ISRTCommon.h)
+	ISRTCommon.h
+	CausticsMapping.h)
 source_group("Header Files" FILES ${headers})
 
 set(sources
@@ -22,7 +23,8 @@ set(sources
 	Aggregator.cpp
 	Caustics.cpp
 	SVGF.cpp
-	Fresnel.cpp)
+	Fresnel.cpp
+	CausticsMapping.cpp)
 source_group("Source Files" FILES ${sources})
 
 set(shaders
@@ -39,7 +41,10 @@ set(shaders
 	SVGFAtrousWT.glsl
 	PathTracer.glsl
 	ImageSpaceRT.h
-	TransformParams.glsl)
+	TransformParams.glsl
+	CausticsMapping-vert.glsl
+	CausticsMapping-frag.glsl
+	CausticsMapReproj.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
 

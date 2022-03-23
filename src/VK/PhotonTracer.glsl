@@ -15,21 +15,15 @@ layout (local_size_x = 16, local_size_y = 16) in;
 //  set 0 : input data
 //--------------------------------------------------------------------------------------
 
-// layout (push_constant) uniform pushConstants
-// {
-//     layout (offset = 0) int rsmLightIndex;
-// };
+layout (push_constant) uniform pushConstants
+{
+    layout (offset = 0) int seed;
+};
+
 const int rsmLightIndex = 0;
 
-struct TransformParams
-{
-    mat4 view;
-    vec4 position;
-    float invTanHalfFovH;
-    float invTanHalfFovV;
-    float nearPlane;
-    float farPlane;
-};
+#include "TransformParams.glsl"
+
 struct CausticsParams
 {
     TransformParams camera;
@@ -68,8 +62,6 @@ float fetchRSMDepth(vec2 coord, int mipLevel)
     }
     else
         return textureLod(u_rsmDepth1N, coord, float(mipLevel - 1)).r;
-    // return mipLevel == 0 ? texture(u_rsmDepth0, coord).r :
-    //     textureLod(u_rsmDepth1N, coord, float(mipLevel - 1)).r;
 }
 ivec2 getRSMDepthSize(int mipLevel)
 {
@@ -103,55 +95,57 @@ layout (std140, binding = ID_HitPosIrradiance) buffer HitPositionAndPackedIrradi
 
 #include "functions.glsl"
 #include "RGBEConversion.h"
+#include "ImageSpaceRT.h"
 
 const float IOR = 1.33;
 const float epsilon = 1e-4;
 
-// random function
-// ref : https://thebookofshaders.com/10/
-float randFromCoord (vec2 st) {
-    return fract(sin(dot(st, vec2(12.9898,78.233))) * 43758.5453123);
-}
-
-// Exact, unpolarized Fresnel equation
-float fresnelUnpolarized(
-    float cosI, // cosIncident
-    float cosT, // cosTransmitted
-    float n1, // refractiveIndexIncident,
-    float n2 // refractiveIndexTransmitted
-)
+vec2 sampleNoise()
 {
-    float rs = (n1 * cosI - n2 * cosT) / (n1 * cosI + n2 * cosT);
-    float rp = (n1 * cosT - n2 * cosI) / (n1 * cosT + n2 * cosI);
-    return 0.5f * (rs * rs + rp * rp);
+    const int offset_x[4] = {1, 0, -1, 0};
+    const int offset_y[4] = {0, -1, 0, 1};
+
+    vec2 coord = gl_LocalInvocationID.xy + 0.5f;
+
+    const int seed_x = int(mod(seed, 4));
+    coord.x += offset_x[seed_x];
+    coord.y += offset_y[seed_x];
+    const float noise_x = texture(u_samplingMap, coord).r;
+
+    const int seed_y = int(mod(seed_x + 1, 4));
+    coord.x += offset_x[seed_y];
+    coord.y += offset_y[seed_y];
+    const float noise_y = texture(u_samplingMap, coord).g;
+
+    return (seed / 4 < 1) ? vec2(noise_x, noise_y) : vec2(noise_y, noise_x);
 }
 
 //  retrieve the sample point from RSM and construct ray payload
 int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
 {
     //  retrieve sampling coordinate (texture space, not normalized yet)
-    const vec2 localSamplingCoord = texelFetch(u_samplingMap, ivec2(gl_LocalInvocationID.xy), 0).rg;
-    vec2 samplingCoord = (localSamplingCoord + gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
+    const vec2 localSamplingCoord = sampleNoise();
+    const vec2 samplingCoord = (localSamplingCoord + gl_WorkGroupID.xy) * ivec2(gl_WorkGroupSize.xy * u_params.samplingMapScale);
     const ivec2 rsmDim = textureSize(u_rsmFlux, 0) / 2; // shadow map in 4 quarters 
     if (samplingCoord.x >= rsmDim.x || samplingCoord.y >= rsmDim.y)
         return 1; // out-of-bound coordinate
 
     //  normalize coordinate
-    samplingCoord /= uvec2(rsmDim.x, rsmDim.y);
+    vec2 normSamplingCoord = samplingCoord / uvec2(rsmDim.x, rsmDim.y);
 
     //  sample ray payload
     // remember we are splitting the shadow map in 4 quarters 
-    samplingCoord *= 0.5f;
+    normSamplingCoord *= 0.5f;
 
     // offsets of the center of the shadow map atlas
     const float offsetsX[4] = { 0.0, 0.5, 0.0, 0.5 };
     const float offsetsY[4] = { 0.0, 0.0, 0.5, 0.5 };
-    samplingCoord += vec2(offsetsX[rsmLightIndex], offsetsY[rsmLightIndex]);
+    normSamplingCoord += vec2(offsetsX[rsmLightIndex], offsetsY[rsmLightIndex]);
 
-    const vec3 worldPos = texture(u_rsmWorldCoord, samplingCoord).rgb;
-    const vec3 normal = texture(u_rsmNormal, samplingCoord).rgb * 2.0f - 1.0f;
-    const vec4 specularRoughness = texture(u_rsmSpecular, samplingCoord).rgba;
-    const vec4 fluxAlpha = texture(u_rsmFlux, samplingCoord).rgba;
+    const vec3 worldPos = texture(u_rsmWorldCoord, normSamplingCoord).rgb;
+    const vec3 normal = texture(u_rsmNormal, normSamplingCoord).rgb * 2.0f - 1.0f;
+    const vec4 specularRoughness = texture(u_rsmSpecular, normSamplingCoord).rgba;
+    const vec4 fluxAlpha = texture(u_rsmFlux, normSamplingCoord).rgba;
 
     //  setting roughness cutoff to 30% (perceptualRoughness > 0.3 shall not pass)
     if (specularRoughness.a > 0.3f)
@@ -172,7 +166,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
     // In the case of total internal reflection the refract() function
     // returns (0,0,0) and Fresnel has to be 1.
     float fresnel = 1.0f;
-    if (any(greaterThan(refracted, vec3(0)))) 
+    if (length(refracted) >= epsilon) 
     {
         // Compute Fresnel using the Fresnel equations (not the Schlick
         // approximation!) This is more precise, especially if the
@@ -185,7 +179,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
     }
 
     // random and see if we go for reflection or refraction
-    if (randFromCoord(localSamplingCoord) < fresnel) // reflection
+    if (randFromCoord(samplingCoord) < fresnel) // reflection
         bounceDir = reflect(-view, normal);
     else // refraction
         bounceDir = refracted;
@@ -195,202 +189,6 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
     power = fluxAlpha.xyz;
 
     return 0;
-}
-
-float toViewDepth(float projDepth, float nearPlane, float farPlane)
-{ return -nearPlane * farPlane / (projDepth * (nearPlane - farPlane) + farPlane); }
-
-bool traceOnView(vec3 origin, vec3 direction, TransformParams viewParams, bool bCamera, out float lastT, out vec2 lastCoord)
-{
-    lastT = 0;
-    lastCoord = vec2(-1);
-
-    //  remember the view and clip space is RH (negative Z)
-    //  determine projected trace direction
-    const vec4 viewOri = viewParams.view * vec4(origin, 1.0f);
-    const vec4 viewDir = viewParams.view * vec4(direction, 0.0f);
-
-    //  handle special cases : too narrow direction vector
-    //  this is to prevent an overflow of t value also
-    const float near_linear = viewParams.nearPlane;
-    const float far_linear = viewParams.farPlane;
-    
-    float tMax_actual = u_params.tMax;
-
-    if (near_linear > (-viewOri.z) || far_linear < (-viewOri.z))
-        return false;
-    
-    const vec2 projVec_xy = vec2(viewParams.invTanHalfFovH, viewParams.invTanHalfFovV);
-    const vec2 projOri = viewOri.xy * projVec_xy / (-viewOri.z);
-    vec2 moveDir;
-    {
-        vec3 viewDst = viewOri.xyz + viewDir.xyz * tMax_actual;
-
-        //  pre-bound for near-far plane
-        if (viewDst.z > -near_linear)
-        {
-            float t_atNear = (-near_linear - viewOri.z) / viewDir.z;
-            viewDst = viewOri.xyz + viewDir.xyz * t_atNear;
-            tMax_actual = t_atNear;
-        }
-        else if (viewDst.z < -far_linear)
-        {
-            float t_atFar = (-far_linear - viewOri.z) / viewDir.z;
-            viewDst = viewOri.xyz + viewDir.xyz * t_atFar;
-            tMax_actual = t_atFar;
-        }
-
-        vec2 projDst = viewDst.xy * projVec_xy / (-viewDst.z);
-        moveDir = projDst - projOri;
-    }
-
-    //  initialize ray info
-    lastCoord = vec2(0.5f) + vec2(projOri.x, -projOri.y) * 0.5f;
-
-    const float lastProjSampleDepth = bCamera ? fetchGBufDepth(lastCoord, 0) : fetchRSMDepth(lastCoord, 0);
-    const float lastViewSampleDepth = toViewDepth(lastProjSampleDepth, near_linear, far_linear);
-
-    if (abs(viewOri.z - lastViewSampleDepth) <= u_params.rayThickness_z)
-        return true;
-    else if (viewOri.z < lastViewSampleDepth)
-        return false;
-    
-    //  calculate unit move direction in image space
-    if (length(moveDir / 2) < epsilon)
-    {
-        if (viewDir.z < 0)
-        {
-            lastT = (lastViewSampleDepth - viewOri.z) / viewDir.z;
-            return (lastProjSampleDepth < 1.0f) ? true : false; // hit
-        }
-        else
-        {
-            lastT = (-near_linear - viewOri.z) / viewDir.z;
-            return false; // miss
-        }
-    }
-    const vec2 unitMoveDir = normalize(vec2(moveDir.x, -moveDir.y));
-
-    //  traverse for the first occlusion first
-    bool bHit = false;
-    int traverseLevel = 0;
-    int maxTraverseLevel = 0; //bCamera ? textureQueryLevels(u_gbufDepth1N) : textureQueryLevels(u_rsmDepth1N);
-    while (traverseLevel >= 0)
-    {
-        const vec2 nextBasis = vec2(1) / (bCamera ? getGBufDepthSize(traverseLevel) : getRSMDepthSize(traverseLevel));
-        const vec2 nextCoord = lastCoord + unitMoveDir * nextBasis;
-
-        if (nextCoord.x >= 0 && nextCoord.x <= 1 &&
-            nextCoord.y >= 0 && nextCoord.y <= 1)
-        {
-            //  fetch scene's depth value
-            const float nextProjSamplePos_z = bCamera ? fetchGBufDepth(nextCoord, traverseLevel) : fetchRSMDepth(nextCoord, traverseLevel); // = depth_nonlinear;
-            const float nextViewSamplePos_z = toViewDepth(nextProjSamplePos_z, near_linear, far_linear); // = depth_linear;
-
-            const vec2 nextProjSamplePos_xy = vec2(2, -2) * (nextCoord - 0.5f);
-
-            //  calculate t if xy-coord (view space) is equal
-            const float t_eqXY = abs(viewDir.x) > abs(viewDir.y) ?
-                (-nextProjSamplePos_xy.x * viewOri.z - projVec_xy.x * viewOri.x) / 
-                    (projVec_xy.x * viewDir.x + nextProjSamplePos_xy.x * viewDir.z) : 
-                (-nextProjSamplePos_xy.y * viewOri.z - projVec_xy.y * viewOri.y) / 
-                    (projVec_xy.y * viewDir.y + nextProjSamplePos_xy.y * viewDir.z);
-
-            if (t_eqXY <= tMax_actual)
-            {
-                const float nextViewRayEndPos_z = viewOri.z + viewDir.z * t_eqXY;
-
-                //  check hit (remember that view depth (linear) is negative !!)
-                if (nextViewRayEndPos_z > nextViewSamplePos_z + epsilon) // ray is still above the surface
-                {
-                    if (traverseLevel < maxTraverseLevel)
-                        traverseLevel += 1;
-
-                    lastT = t_eqXY;
-                    lastCoord = nextCoord;
-                    continue;
-                }
-                else if (traverseLevel == 0) // ray is hit or occluded
-                {
-                    if (nextViewRayEndPos_z >= nextViewSamplePos_z)
-                    {
-                        lastT = t_eqXY;
-                        lastCoord = nextCoord;
-                        bHit = true;
-                    }
-                    else
-                    {
-                        //  perform linear backtracking to fing an exact hit point
-                        const float prevProjSamplePos_z = bCamera ? fetchGBufDepth(lastCoord, traverseLevel) : fetchRSMDepth(lastCoord, traverseLevel); // = depth_nonlinear;
-                        const float prevViewSamplePos_z = toViewDepth(prevProjSamplePos_z, near_linear, far_linear); // = depth_linear;
-
-                        const float prevViewRayEndPos_z = viewOri.z + viewDir.z * lastT;
-
-                        const float dzdtSample = nextViewSamplePos_z - prevViewSamplePos_z;
-                        const float dzdtRay = nextViewRayEndPos_z - prevViewRayEndPos_z;
-                    
-                        if (abs(dzdtSample - dzdtRay) >= epsilon)
-                        {
-                            const float a_intersect = (prevViewSamplePos_z - prevViewRayEndPos_z) / (dzdtRay - dzdtSample);
-                            if (0 <= a_intersect && a_intersect <= 1)
-                            {
-                                const float t_intersect = mix(lastT, t_eqXY, a_intersect);
-                                lastT = t_intersect;
-                                const vec2 coord_intersect = mix(lastCoord, nextCoord, a_intersect);
-                                lastCoord = coord_intersect;
-
-                                bHit = true;
-                            }
-                        }
-                    }
-                }
-            }
-            else if(traverseLevel == 0) // in case of exceeding t, use tMax as the last stop
-            {
-                lastT = tMax_actual;
-
-                const vec3 lastViewRayEndPos = viewOri.xyz + viewDir.xyz * tMax_actual;
-                const vec2 lastProjRayEndPos = lastViewRayEndPos.xy * projVec_xy / (-lastViewRayEndPos.z);
-                lastCoord = vec2(0.5f) + vec2(lastProjRayEndPos.x, -lastProjRayEndPos.y) * 0.5f;
-            }
-        }
-        else if (traverseLevel == 0)
-        {
-            vec2 lastT_atEdge = vec2(tMax_actual);
-            if (nextCoord.x < 0) // exceed -1
-                lastT_atEdge.x = (viewOri.z - projVec_xy.x * viewOri.x) / (viewDir.x * projVec_xy.x - viewDir.z);
-            else if (nextCoord.x > 1) // exceed 1
-                lastT_atEdge.x = (-viewOri.z - projVec_xy.x * viewOri.x) / (viewDir.x * projVec_xy.x + viewDir.z);
-            if (nextCoord.y < 0) // exceed 1
-                lastT_atEdge.y = (-viewOri.z - projVec_xy.y * viewOri.y) / (viewDir.y * projVec_xy.y + viewDir.z);
-            else if (nextCoord.y > 1) // exceed -1
-                lastT_atEdge.y = (viewOri.z - projVec_xy.y * viewOri.y) / (viewDir.y * projVec_xy.y - viewDir.z);
-
-            if (lastT_atEdge.x < lastT_atEdge.y) // end at horizontal edge
-            {
-                lastT = lastT_atEdge.x;
-
-                float bound = (unitMoveDir.x < 0) ? 0.0f : 1.0f;
-                lastCoord.y = lastCoord.y + unitMoveDir.y * (bound - lastCoord.x) / unitMoveDir.x;
-                lastCoord.x = bound;
-            }
-            else // end at vertical edge
-            {
-                lastT = lastT_atEdge.y;
-
-                float bound = (unitMoveDir.y < 0) ? 0.0f : 1.0f;
-                lastCoord.x = lastCoord.x + unitMoveDir.x * (bound - lastCoord.y) / unitMoveDir.y;
-                lastCoord.y = bound;
-            }
-
-            bHit = false;
-        }
-        
-        traverseLevel -= 1;
-        maxTraverseLevel = traverseLevel;
-    }
-
-    return bHit;
 }
 
 //  trace the ray through the depth map and decay the input power in-place. 
@@ -409,12 +207,15 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
     //  note : we ignore bHit and lastCoord from RSM tracing, 
     //         because we don't rule out hitting in this pass.
     float t;
-    traceOnView(lastPos, direction, u_params.lights[rsmLightIndex], false, t, lastCoord);
+    //traceOnView(lastPos, direction, u_params.lights[rsmLightIndex], false, t, lastCoord);
+    traceOnView(lastPos, direction, u_params.lights[rsmLightIndex], false, u_params.tMax, t, lastCoord);
+    //if(u_params.tMax < 0) t = 0;
     lastPos = lastPos + direction * t;
     lastT += t;
 
     // continue tracing in screen space
-    bHit = traceOnView(lastPos, direction, u_params.camera, true, t, lastCoord);
+    //bHit = traceOnView(lastPos, direction, u_params.camera, true, t, lastCoord);
+    bHit = traceOnView(lastPos, direction, u_params.camera, true, u_params.tMax, t, lastCoord);
     lastPos = lastPos + direction * t;
     lastT += t;
 
@@ -445,7 +246,7 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
             const float invPixelArea = screenSize.x * screenSize.y * 
                                         u_params.camera.invTanHalfFovH * u_params.camera.invTanHalfFovV / 
                                         (4 * distanceFromEye * distanceFromEye);
-            const vec3 irradiance = power * invPixelArea;
+            const vec3 irradiance = power * invPixelArea * 0.1f;
 
             //  compress irradiance
             irradiance_32b = uintBitsToFloat(float3ToRGBE(irradiance));
@@ -453,6 +254,18 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
     }
 
     return vec4(hitPos, irradiance_32b);
+
+    // const vec4 viewPos = u_params.camera.view * vec4(lastPos, 1.0f);
+    // const vec2 proj = vec2(u_params.camera.invTanHalfFovH, u_params.camera.invTanHalfFovV);
+    // const vec2 projPos = viewPos.xy * proj / (-viewPos.z);
+    // const float projConstA = u_params.camera.farPlane / (u_params.camera.nearPlane - u_params.camera.farPlane);
+    // const float projConstB = projConstA * u_params.camera.nearPlane;
+    // const float projDepth = -projConstA + projConstB / (-viewPos.z);
+
+    // //  this finally guarantee that the ray hits, and the photon is visible to the camera
+    // hitPos = vec3(projPos.x, projPos.y, projDepth);
+
+    // return vec4(hitPos, uintBitsToFloat(float3ToRGBE(vec3(1))));
 }
 
 void main()

@@ -6,6 +6,8 @@ float randFromCoord(vec2 st) {
     return fract(sin(dot(st, vec2(12.9898, 78.233))) * 43758.5453123);
 }
 
+#define USE_NEW_TRACE
+
 // Exact, unpolarized Fresnel equation
 float fresnelUnpolarized(
     float cosI, // cosIncident
@@ -18,7 +20,7 @@ float fresnelUnpolarized(
     float rp = (n1 * cosT - n2 * cosI) / (n1 * cosT + n2 * cosI);
     return 0.5f * (rs * rs + rp * rp);
 }
-
+#ifndef USE_NEW_TRACE
 //  trace rays through a given view
 //  NOTE : users need to define these functions prior to this function call
 //  - float fetchGBufDepth(vec2 coord, int mipLevel)
@@ -111,7 +113,7 @@ bool traceOnView(
     while (traverseLevel >= 0)
     {
         const vec2 nextBasis = vec2(1) / (bCamera ? getGBufDepthSize(traverseLevel) : getRSMDepthSize(traverseLevel));
-        const vec2 nextCoord = lastCoord + unitMoveDir * nextBasis;
+        const vec2 nextCoord = lastCoord + unitMoveDir * (nextBasis.x < nextBasis.y ? nextBasis.x : nextBasis.y);
 
         if (nextCoord.x >= 0 && nextCoord.x <= 1 &&
             nextCoord.y >= 0 && nextCoord.y <= 1)
@@ -225,3 +227,176 @@ bool traceOnView(
 
     return bHit;
 }
+#else
+bool traceOnView(
+    vec3 worldOri, 
+    vec3 worldDir, 
+    TransformParams viewParams,
+    bool bCamera,
+    float tMax,
+    out float lastT,
+    out vec2 lastCoord)
+{
+    lastT = 0;
+    lastCoord = vec2(-1);
+
+    const vec4 viewOri = viewParams.view * vec4(worldOri, 1.0f);
+    const vec4 viewDir = viewParams.view * vec4(worldDir, 0.0f);
+
+    const float invH = viewParams.invTanHalfFovH;
+    const float invV = viewParams.invTanHalfFovV;
+    const float nearZ = viewParams.nearPlane;
+    const float farZ = viewParams.farPlane;
+
+    //  remember the view and clip space is RH (negative Z)
+    if (nearZ > (-viewOri.z) || farZ < (-viewOri.z))
+        return false;
+
+    const float fRange = farZ / (nearZ - farZ);
+    const mat4 proj = mat4(
+        invH,            0, 0, 0, // col1
+		0, invV,            0, 0, // col2
+		0, 0, fRange         ,-1, // col3
+		0, 0, nearZ * fRange , 0  // col4
+	);
+
+    //  determine moving direction in screen space
+    vec4 viewDst = viewOri + viewDir * tMax;
+    
+    //  pre-bound for near-far plane
+    //  NOTE: this step is needed because it will prevent reverse projection-space XY
+    if (viewDst.z > -nearZ)
+    {
+        float t_atNear = (-nearZ - viewOri.z) / viewDir.z;
+        viewDst = viewOri + viewDir * t_atNear;
+        tMax = t_atNear;
+    }
+    else if (viewDst.z < -farZ)
+    {
+        float t_atFar = (-farZ - viewOri.z) / viewDir.z;
+        viewDst = viewOri + viewDir * t_atFar;
+        tMax = t_atFar;
+    }
+
+    const vec4 projOri = (proj * viewOri) / (-viewOri.z/* = projOri.w */);
+    const vec4 projDst = (proj * viewDst) / (-viewDst.z/* = projDst.w */);
+    const vec2 moveDir = projDst.xy - projOri.xy;
+
+    //  setup initial values before tracing
+    lastCoord = vec2(0.5f) + vec2(projOri.x, -projOri.y) * 0.5f;
+    const vec2 lastBasis = vec2(1) / (bCamera ? getGBufDepthSize(0) : getRSMDepthSize(0));
+    float lastSampleDepth = bCamera ? fetchGBufDepth(lastCoord, 0) : fetchRSMDepth(lastCoord, 0);
+
+    if (abs(viewOri.z - toViewDepth(lastSampleDepth, nearZ, farZ)) <= 0.015f)
+        return true;
+
+    //  if it's already occluded, don't proceed
+    if (lastSampleDepth < projOri.z)
+        return false;
+
+    //  or if its direction is perpendicular to the screen, don't trace and calculate 't' directly!
+    else if (length(moveDir / 2.0f) < (lastBasis.x < lastBasis.y ? lastBasis.x : lastBasis.y))
+    {
+        if (viewDir.z < 0)  // towards farZ plane
+        {
+            if (lastSampleDepth >= 1.0f)
+                return false;
+            
+            lastT = (toViewDepth(lastSampleDepth, nearZ, farZ) - viewOri.z) / viewDir.z;
+            if (lastT > tMax) 
+            {
+                lastT = tMax;
+                return false;
+            }
+                
+            return true;
+        }
+        else                // towards nearZ plane
+        {
+            lastT = (-nearZ - viewOri.z) / viewDir.z;
+            return false;
+        }
+    }
+
+    //  determine a direction in texture-space
+    const vec2 unitMoveDir = normalize(vec2(moveDir.x, -moveDir.y));
+
+    //  traverse for the first occlusion
+    bool bHit = false;
+    vec2 startCoord = lastCoord;
+    int traverseLevel = 0;
+    int maxTraverseLevel = 0; //bCamera ? textureQueryLevels(u_gbufDepth1N) : textureQueryLevels(u_rsmDepth1N); // ToDo : need fix!
+    while (traverseLevel >= 0)
+    {
+        const vec2 nextBasis = vec2(1) / (bCamera ? getGBufDepthSize(traverseLevel) : getRSMDepthSize(traverseLevel));
+        const vec2 nextCoord = startCoord + unitMoveDir * (nextBasis.x < nextBasis.y ? nextBasis.x : nextBasis.y);
+
+        if(all(greaterThanEqual(nextCoord, vec2(0))) && 
+            all(lessThanEqual(nextCoord, vec2(1))))
+        {
+            const vec2 nextProjPos2D = vec2(2, -2) * (nextCoord - 0.5f);
+            const float nextT = abs(viewDir.x) > abs(viewDir.y) ?
+                -dot(vec2(viewOri.x, viewOri.z), vec2(invH, nextProjPos2D.x)) / 
+                    dot(vec2(viewDir.x, viewDir.z), vec2(invH, nextProjPos2D.x)) :
+                -dot(vec2(viewOri.y, viewOri.z), vec2(invV, nextProjPos2D.y)) / 
+                    dot(vec2(viewDir.y, viewDir.z), vec2(invV, nextProjPos2D.y));
+            const vec4 nextViewPos = viewOri + viewDir * nextT;
+
+            if(nextT <= tMax)
+            {
+                const float nextRayEndDepth = ((proj * nextViewPos) / (-nextViewPos.z/* = nextProjPos.w */)).z;
+                const float nextSampleDepth = bCamera ? fetchGBufDepth(nextCoord, traverseLevel) : fetchRSMDepth(nextCoord, traverseLevel);
+                
+                if (nextRayEndDepth < nextSampleDepth) // still above
+                {
+                    if (traverseLevel < maxTraverseLevel)
+                        traverseLevel += 1;
+                    else
+                        startCoord = nextCoord;
+
+                    lastT = nextT;
+                    lastCoord = nextCoord;
+
+                    continue;
+                }
+                else if(traverseLevel == 0) // occluded, and it's over
+                {
+                    //  perform linear intersection to find an exact hit point (represented by 't' value)
+                    lastSampleDepth = bCamera ? fetchGBufDepth(lastCoord, 0) : fetchRSMDepth(lastCoord, 0);
+                    const float lastSampleZ = toViewDepth(lastSampleDepth, nearZ, farZ);
+                    const float lastRayEndZ = viewOri.z + viewDir.z * lastT;
+
+                    const float nextSampleZ = toViewDepth(nextSampleDepth, nearZ, farZ);
+                    const float nextRayEndZ = nextViewPos.z;
+
+                    const float dzdtSample = nextSampleZ - lastSampleZ;
+                    const float dzdtRay = nextRayEndZ - lastRayEndZ;
+
+                    if (abs(dzdtSample - dzdtRay) >= SSRT_EPS)
+                    {
+                        const float a_intersect = (lastSampleZ - lastRayEndZ) / (dzdtRay - dzdtSample);
+                        if (0 <= a_intersect && a_intersect <= 1)
+                        {
+                            const float t_intersect = mix(lastT, nextT, a_intersect);
+                            if (t_intersect <= tMax)
+                            {
+                                const vec2 coord_intersect = mix(lastCoord, nextCoord, a_intersect);
+
+                                lastT = t_intersect;
+                                bHit = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // occluded, but let's try at lower level
+        startCoord = lastCoord;
+        traverseLevel -= 1;
+        maxTraverseLevel = traverseLevel;
+    }
+
+    return bHit;
+}
+#endif
