@@ -15,11 +15,6 @@ void Caustics::OnCreate(
 	VkRenderPass renderPass)
 {
 	this->pDevice = pDevice;
-	this->pResourceViewHeaps = pResourceViewHeaps;
-	this->pDynamicBufferRing = pDynamicBufferRing;
-
-	this->rsmWidth = pRSM->m_EmissiveFlux.GetWidth() / 2;
-	this->rsmHeight = pRSM->m_EmissiveFlux.GetHeight() / 2;
 
 	//	define render pass
 	VkAttachmentDescription att_desc[1];
@@ -31,6 +26,12 @@ void Caustics::OnCreate(
 		&att_desc[0]);
 	this->pm_renderPass = CreateRenderPassOptimal(this->pDevice->GetDevice(), 1, att_desc, nullptr);
 #ifdef USE_BIRT
+	this->rsmWidth = pRSM->m_EmissiveFlux.GetWidth() / 2;
+	this->rsmHeight = pRSM->m_EmissiveFlux.GetHeight() / 2;
+	
+	this->pResourceViewHeaps = pResourceViewHeaps;
+	this->pDynamicBufferRing = pDynamicBufferRing;
+
 	//	define intermediate buffer storing photon tracing results
 	{
 		const uint32_t hitpointBufferMemSize = MAX_PHOTON_COUNT * sizeof(float) * 4;
@@ -123,7 +124,8 @@ void Caustics::OnCreate(
 		pDevice, pUploadHeap,
 		pResourceViewHeaps,
 		pDynamicBufferRing,
-		this->rsmWidth, this->rsmHeight,
+		pRSM->m_EmissiveFlux.GetWidth() / 2, 
+		pRSM->m_EmissiveFlux.GetHeight() / 2,
 		pRSM, rsmDepthOpaque0SRV,
 		this->pm_renderPass
 	);
@@ -160,15 +162,19 @@ void Caustics::OnDestroy()
 	}
 
 	this->hitpointBuffer.OnDestroy();
+	
+	this->pResourceViewHeaps = nullptr;
+	this->pDynamicBufferRing = nullptr;
+
+	this->rsmWidth = 0;
+	this->rsmHeight = 0;
 #else
 	this->causticsMap.OnDestroy();
 #endif
 	vkDestroyRenderPass(this->pDevice->GetDevice(), this->pm_renderPass, NULL);
+	this->pm_renderPass = VK_NULL_HANDLE;
 
 	this->pDevice = nullptr;
-	this->pResourceViewHeaps = nullptr;
-	this->pDynamicBufferRing = nullptr;
-
 	this->pGPUTimeStamps = nullptr;
 }
 
@@ -177,17 +183,12 @@ void Caustics::OnCreateWindowSizeDependentResources(
 	GBuffer* pGBuffer, 
 	VkImageView gbufDepthOpaque0SRV, Texture* pGBufDepthOpaque1N, int mipCount)
 {
-	this->outWidth = Width;
-	this->outHeight = Height;
-
-	this->pGBuffer = pGBuffer;
-
 	//	photon map (point rendering) pass
 	{
 		//	initialize render target
 		this->pm_irradianceMap.InitRenderTarget(
 			this->pDevice,
-			this->outWidth, this->outHeight,
+			Width, Height,
 			VK_FORMAT_R16G16B16A16_SFLOAT/*VK_FORMAT_R16G16B16A16_UNORM*/,
 			VK_SAMPLE_COUNT_1_BIT,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -206,10 +207,15 @@ void Caustics::OnCreateWindowSizeDependentResources(
 			this->pDevice->GetDevice(),
 			this->pm_renderPass,
 			&attachments,
-			this->outWidth, this->outHeight
+			Width, Height
 		);
 	}
 #ifdef USE_BIRT
+	this->outWidth = Width;
+	this->outHeight = Height;
+
+	this->pGBuffer = pGBuffer;
+
 	//	photon tracing pass
 	{
 		//	create image view for gbuf depth (opaque)
@@ -245,6 +251,10 @@ void Caustics::OnDestroyWindowSizeDependentResources()
 	{
 		vkDestroyImageView(this->pDevice->GetDevice(), this->gbufDepthOpaque1NSRV, nullptr);
 	}
+
+	this->pGBuffer = nullptr;
+	this->outWidth = 0;
+	this->outHeight = 0;
 #else
 	this->causticsMap.OnDestroyWindowSizeDependentResources();
 #endif
@@ -260,10 +270,6 @@ void Caustics::OnDestroyWindowSizeDependentResources()
 		this->pm_irradianceMapSRV = VK_NULL_HANDLE;
 		this->pm_irradianceMap.OnDestroy();
 	}
-
-	this->pGBuffer = nullptr;
-	this->outWidth = 0;
-	this->outHeight = 0;
 }
 
 void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, const Caustics::Constants& constants)
@@ -397,7 +403,7 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 #endif
 	SetPerfMarkerEnd(commandBuffer);
 }
-
+#ifdef USE_BIRT
 void Caustics::createPhotonTracerDescriptors(DefineList* pDefines)
 {
 	const uint32_t bindingCount = 12;
@@ -751,3 +757,4 @@ void Caustics::generateSamplingPoints(UploadHeap& uploadHeap)
 	//  create image view
 	this->samplingMap.CreateSRV(&this->samplingMapSRV);
 }
+#endif

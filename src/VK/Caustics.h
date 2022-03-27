@@ -62,13 +62,19 @@ public:
     { this->pGPUTimeStamps = pGPUTimeStamps; }
 
 protected:
-
     Device* pDevice = nullptr;
+    GPUTimestamps* pGPUTimeStamps = nullptr;
 
+    //  photon mapping's output buffer
+    Texture               pm_irradianceMap;
+    VkImageView           pm_irradianceMapSRV = VK_NULL_HANDLE;
+
+    VkRenderPass          pm_renderPass;
+
+    VkFramebuffer         pm_framebuffer;
+#ifdef USE_BIRT
     ResourceViewHeaps* pResourceViewHeaps = nullptr;
     DynamicBufferRing* pDynamicBufferRing = nullptr;
-
-    GPUTimestamps* pGPUTimeStamps = nullptr;
 
     GBuffer* pGBuffer = nullptr;
 
@@ -104,15 +110,8 @@ protected:
 
     //  photon mapping (point renderer) stuff
     //
-    Texture               pm_irradianceMap;
-    VkImageView           pm_irradianceMapSRV = VK_NULL_HANDLE;
-
     VkPipeline            pm_pipeline;
     VkPipelineLayout      pm_pipelineLayout;
-
-    VkRenderPass          pm_renderPass;
-
-    VkFramebuffer         pm_framebuffer;
 
     void createPhotonMapperPipeline(const DefineList& defines);
 
@@ -120,10 +119,9 @@ protected:
     SVGF denoiser;
 
     void generateSamplingPoints(UploadHeap& uploadHeap);
-
+#else
     //  alternate algorithm for caustics
     //  WARNING : just to evaluete ONLY!!
-#ifndef USE_BIRT
     CausticsMapping       causticsMap;
 #endif
 };
