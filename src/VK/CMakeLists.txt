@@ -12,7 +12,8 @@ set(headers
 	SVGF.h
 	Fresnel.h
 	ISRTCommon.h
-	CausticsMapping.h)
+	CausticsMapping.h
+	Ocean.h)
 source_group("Header Files" FILES ${headers})
 
 set(sources
@@ -24,7 +25,8 @@ set(sources
 	Caustics.cpp
 	SVGF.cpp
 	Fresnel.cpp
-	CausticsMapping.cpp)
+	CausticsMapping.cpp
+	Ocean.cpp)
 source_group("Source Files" FILES ${sources})
 
 set(shaders
@@ -44,7 +46,10 @@ set(shaders
 	TransformParams.glsl
 	CausticsMapping-vert.glsl
 	CausticsMapping-frag.glsl
-	CausticsMapReproj.glsl)
+	CausticsMapReproj.glsl
+	Ocean-vert.glsl
+	Ocean-tess.glsl
+	Ocean-frag.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
 

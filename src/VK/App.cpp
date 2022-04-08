@@ -223,6 +223,9 @@ void App::OnRender()
             cumulativeFrameTime = 0.;
         }
 
+        // run the animation
+        this->renderer_state.deltaTime = this->deltaTime;
+
         if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Text("Resolution\t: %i x %i", this->m_Width, this->m_Height);

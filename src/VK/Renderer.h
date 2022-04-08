@@ -4,6 +4,7 @@
 #include "Caustics.h"
 #include "Fresnel.h"
 //#include "IndirectLighting.h"
+#include "Ocean.h"
 #include "Aggregator.h"
 
 class Renderer
@@ -12,6 +13,8 @@ public:
 
 	struct State
 	{
+		double deltaTime{0};
+
 		XMVECTOR sunDir;
 		float DIWeight = 0.5f; // 0 = full dLight, 1 = full iLight
 	};
@@ -41,6 +44,10 @@ protected:
 	VkRect2D rectScissor;
 
 	std::vector<TimeStamp> timeStampRecords;
+
+	//	animation
+	double accumTime{ 0 };
+	uint32_t oceanIter{ 0 };
 
 	//  GUI (view component in MVC, 
 	//	controller(C) will be managed in frontend App class)
@@ -88,6 +95,7 @@ protected:
 	//	skydome
 	//SkyDome skyDome;
 	SkyDomeProc skyDomeProc;
+	Ocean ocean;
 	GBufferRenderPass rp_skyDome;
 
 	//	post-processing handle

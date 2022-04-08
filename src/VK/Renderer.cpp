@@ -74,29 +74,6 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
         //  init cache
         this->cache_rsmDepth.InitDepthStencil(this->pDevice, totalRSMSize, totalRSMSize, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, "RSM Depth Cache");
-        /*{
-            VkImageMemoryBarrier use_barrier = {};
-            use_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            use_barrier.srcAccessMask = 0;
-            use_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            use_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            use_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            use_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            use_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            use_barrier.subresourceRange.baseMipLevel = 0;
-            use_barrier.subresourceRange.levelCount = 1;
-            use_barrier.subresourceRange.baseArrayLayer = 0;
-            use_barrier.subresourceRange.layerCount = 1;
-            use_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-            use_barrier.image = this->cache_rsmDepth.Resource();
-
-            vkCmdPipelineBarrier(this->uploadHeap.GetCommandList(),
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
-                0, 0, NULL, 0, NULL, 1, &use_barrier);
-
-            this->uploadHeap.FlushAndFinish();
-        }*/
         this->cache_rsmDepth.CreateSRV(&cache_rsmDepthSRV);
     }
     //
@@ -226,6 +203,12 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
             VK_SAMPLE_COUNT_1_BIT);
     }
 
+    //  ocean
+    {
+        this->ocean.OnCreate(this->pDevice, &this->uploadHeap, &this->resViewHeaps, &this->dBufferRing,
+            "..\\res\\ocean\\normal\\####.png", &this->rp_RSM_trans, &this->rp_gBuffer_trans, VK_SAMPLE_COUNT_1_BIT);
+    }
+
     //  initialize post-processing handles
     this->aggregator_1.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing, 1); // should be 3 if includes AO and I1
     this->aggregator_2.OnCreate(this->pDevice, &this->resViewHeaps, &this->dBufferRing, 1);
@@ -250,6 +233,7 @@ void Renderer::OnDestroy()
     this->aggregator_2.OnDestroy();
     this->aggregator_1.OnDestroy();
 
+    this->ocean.OnDestroy();
     this->skyDomeProc.OnDestroy();
     /*this->skyDome.OnDestroy();*/
     this->rp_skyDome.OnDestroy();
@@ -327,29 +311,6 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
 
     //  init cache
     this->cache_gbufDepth.InitDepthStencil(this->pDevice, Width, Height, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, "G-Buffer Depth Cache");
-    /*{
-        VkImageMemoryBarrier use_barrier = {};
-        use_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        use_barrier.srcAccessMask = 0;
-        use_barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        use_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        use_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        use_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        use_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        use_barrier.subresourceRange.baseMipLevel = 0;
-        use_barrier.subresourceRange.levelCount = 1;
-        use_barrier.subresourceRange.baseArrayLayer = 0;
-        use_barrier.subresourceRange.layerCount = 1;
-        use_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        use_barrier.image = this->cache_rsmDepth.Resource();
-
-        vkCmdPipelineBarrier(this->uploadHeap.GetCommandList(),
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, NULL, 0, NULL, 1, &use_barrier);
-
-        this->uploadHeap.FlushAndFinish();
-    }*/
     this->cache_gbufDepth.CreateSRV(&this->cache_gbufDepthSRV);
     this->cache_gbufDepthMipmap.OnCreateWindowSizeDependentResources(
         Width, Height, 
@@ -433,6 +394,18 @@ void Renderer::OnDestroyWindowSizeDependentResources()
 
 void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State* pState)
 {
+    //  proceed animation
+    this->accumTime += pState->deltaTime;
+    if (this->accumTime > 0)
+    {
+        const uint32_t iterFwd = (uint32_t)(this->accumTime / 33.33);
+        if (iterFwd > 0)
+        {
+            this->accumTime = 0;
+            this->oceanIter = (this->oceanIter + iterFwd) % 20;
+        }
+    }
+
     //  preparing for a new frame
     this->dBufferRing.OnBeginFrame();
 
@@ -450,6 +423,14 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
 
     //  start profiler
     this->gTimeStamps.OnBeginFrame(cmdBuf1, &this->timeStampRecords);
+
+    //  predefine ocean
+    Ocean::Constants oceanConst;
+    oceanConst.currWorld = Ocean::Constants::calculateWorldMatrix(
+        { 0, 0.35f, 0 },
+        { 1.0f, 1.0f, 1.0f }
+    );
+    oceanConst.prevWorld = oceanConst.currWorld;
     
     //  seed TAA
     static uint32_t seed;
@@ -623,7 +604,11 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_RSM_trans.BeginPass(cmdBuf1, rectScissor_RSM);
         {
             vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 0); // need class design
-            this->pRSMPass->DrawBatchList(cmdBuf1, &transparents, rsmIndex);
+            //this->pRSMPass->DrawBatchList(cmdBuf1, &transparents, rsmIndex);
+
+            oceanConst.currViewProj = pPerFrameData->lights[rsmIndex].mLightViewProj;
+            oceanConst.rsmLight = pPerFrameData->lights[rsmIndex];
+            this->ocean.Draw(cmdBuf1, oceanConst, this->oceanIter, rsmIndex);
         }
         this->rp_RSM_trans.EndPass(cmdBuf1);
 
@@ -707,7 +692,11 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_gBuffer_trans.BeginPass(cmdBuf1, rectScissor_GBuffer);
         {
             vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 1);  // need class design
-            this->pGltfPbrPass->DrawBatchList(cmdBuf1, &transparents);
+            //this->pGltfPbrPass->DrawBatchList(cmdBuf1, &transparents);
+
+            oceanConst.currViewProj = pPerFrameData->mCameraCurrViewProj;
+            oceanConst.prevViewProj = pPerFrameData->mCameraPrevViewProj;
+            this->ocean.Draw(cmdBuf1, oceanConst, this->oceanIter);
         }
         this->rp_gBuffer_trans.EndPass(cmdBuf1);
     }
