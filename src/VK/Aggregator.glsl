@@ -17,19 +17,32 @@ layout (local_size_x = 32, local_size_y = 32) in;
 
 struct AggregatorParams
 {
-    float weight;
+    vec4 weights;
+
     uint imgWidth;
     uint imgHeight;
 
-    float padding;
+    float paddings[2];
 };
 layout (std140, binding = ID_Params) uniform Params 
 {
-    AggregatorParams params;
+    AggregatorParams u_params;
 };
 
-layout (rgba16f, binding = ID_DLight) uniform image2D img_DLight;
-layout (binding = ID_ILight) uniform sampler2D img_ILight;
+//  ToDo : find a way to dynamically change the format according to the input target
+layout (rgba16f, binding = ID_Target) uniform image2D img_target;
+
+#ifdef ID_FX0
+layout (binding = ID_FX0) uniform sampler2D u_fx0;
+#endif
+
+#ifdef ID_FX1
+layout (binding = ID_FX1) uniform sampler2D u_fx1;
+#endif
+
+#ifdef ID_FX2
+layout (binding = ID_FX2) uniform sampler2D u_fx2;
+#endif
 
 //--------------------------------------------------------------------------------------
 //  main function
@@ -38,13 +51,22 @@ layout (binding = ID_ILight) uniform sampler2D img_ILight;
 void main()
 {
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+    vec2 normCoords = vec2(coords) / vec2(u_params.imgWidth, u_params.imgHeight);
 
-    vec4 dLightColor = imageLoad(img_DLight, coords).rgba;
-    vec3 iLightColor = texture(img_ILight, vec2(float(coords.x) / params.imgWidth, float(coords.y) / params.imgHeight)).rgb;
+    vec4 targetColor = imageLoad(img_target, coords).rgba;
+    targetColor.xyz *= u_params.weights.x;
 
-    float d_weight = clamp(params.weight, 0.0f, 0.5f);
-    float i_weight = clamp(params.weight, 0.5f, 1.0f);
-    vec3 outColor = (dLightColor.xyz * d_weight + iLightColor * (1.0f - i_weight)) * 2.0f;
+#ifdef ID_FX0
+    targetColor.xyz += texture(u_fx0, normCoords).rgb * u_params.weights.y;
+#endif
 
-    imageStore(img_DLight, coords, vec4(outColor, dLightColor.w));
+#ifdef ID_FX1
+    targetColor.xyz += texture(u_fx1, normCoords).rgb * u_params.weights.z;
+#endif
+
+#ifdef ID_FX2
+    targetColor.xyz += texture(u_fx2, normCoords).rgb * u_params.weights.w;
+#endif
+
+    imageStore(img_target, coords, targetColor);
 }

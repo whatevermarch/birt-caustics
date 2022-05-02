@@ -1,8 +1,13 @@
 #pragma once
 
 #include "DirectLighting.h"
-#include "IndirectLighting.h"
+#include "Caustics.h"
+#include "Fresnel.h"
+//#include "IndirectLighting.h"
+#include "Ocean.h"
 #include "Aggregator.h"
+
+//#define USE_TEST_SCENE
 
 class Renderer
 {
@@ -10,6 +15,8 @@ public:
 
 	struct State
 	{
+		double deltaTime{0};
+
 		XMVECTOR sunDir;
 		float DIWeight = 0.5f; // 0 = full dLight, 1 = full iLight
 	};
@@ -24,6 +31,9 @@ public:
 	int loadScene(GLTFCommon* pLoader, int stage);
 	void unloadScene();
 
+	const std::vector<TimeStamp>& getTimeStamps() const
+	{ return this->timeStampRecords; }
+
 protected:
 
 	//	pointer to device
@@ -35,6 +45,12 @@ protected:
 	VkViewport viewport;
 	VkRect2D rectScissor;
 
+	std::vector<TimeStamp> timeStampRecords;
+
+	//	animation
+	double accumTime{ 0 };
+	uint32_t oceanIter{ 0 };
+
 	//  GUI (view component in MVC, 
 	//	controller(C) will be managed in frontend App class)
 	GUI gui;
@@ -45,7 +61,7 @@ protected:
 	ResourceViewHeaps resViewHeaps;	// descriptor sets
 	CommandListRing cmdBufferRing;	// command buffers
 	UploadHeap uploadHeap;			// staging buffers
-	// GPUTimestamps gTimeStamps;
+	GPUTimestamps gTimeStamps;
 	AsyncPool asyncPool;
 
 	//	resources handles
@@ -53,32 +69,52 @@ protected:
 	
 	//	G-Buffer pass
 	GBuffer* pGBuffer = nullptr;						
-	GBufferRenderPass rp_gBuffer_full;
+	GBufferRenderPass rp_gBuffer_opaq, rp_gBuffer_trans;
 	GltfPbrPass* pGltfPbrPass = nullptr;				
 
 	//	RSM pass
 	GBuffer* pRSM = nullptr;
-	GBufferRenderPass rp_RSM_full;
+	GBufferRenderPass rp_RSM_opaq, rp_RSM_trans;
 	GltfPbrPass* pRSMPass = nullptr;
+
+	//	render target caches
+	Texture cache_rsmDepth, cache_gbufDepth, cache_opaque;
+	VkImageView cache_rsmDepthSRV = VK_NULL_HANDLE,
+		cache_gbufDepthSRV = VK_NULL_HANDLE,
+		cache_opaqueSRV = VK_NULL_HANDLE;
+
+	//	caches mipmap
+	DownSamplePS cache_rsmDepthMipmap, cache_gbufDepthMipmap;
 	
 	//	lighting passes
 	DirectLighting* dLighting = nullptr;
-	IndirectLighting* iLighting = nullptr;
+
+	//	GI effects
+	Fresnel* fresnel = nullptr;
+	Caustics* caustics = nullptr;
+	//IndirectLighting* iLighting = nullptr;
 
 	//	skydome
 	//SkyDome skyDome;
 	SkyDomeProc skyDomeProc;
+	Ocean ocean;
 	GBufferRenderPass rp_skyDome;
 
 	//	post-processing handle
-	Aggregator aggregator;
+	Aggregator aggregator_1, aggregator_2;
 	ToneMapping toneMapping;
 	TAA tAA;
 	
 	//	ToDo : setup renderpass containing multiple subpasses instead
 	void setupRenderPass();
 
-	void doGeomDataTransition(VkCommandBuffer cmdBuf); // except camDepth and Motion
-	void doLightingTransition(VkCommandBuffer cmdBuf); // D + I
-	void doAggregationTransition(VkCommandBuffer cmdBuf); // include camDepth and Motion
+	void barrier_Cache_GO_RO(VkCommandBuffer cmdBuf);
+	void barrier_DS(VkCommandBuffer cmdBuf); // future : DS_AO_I1
+	void barrier_RT(VkCommandBuffer cmdBuf); // future : RT_I2
+	void barrier_D_C(VkCommandBuffer cmdBuf);
+	void barrier_A1(VkCommandBuffer cmdBuf);
+	void barrier_GT_Cache_D(VkCommandBuffer cmdBuf);
+	void barrier_DT_RF(VkCommandBuffer cmdBuf);
+	void barrier_A2(VkCommandBuffer cmdBuf);
+	void barrier_AA(VkCommandBuffer cmdBuf);
 };

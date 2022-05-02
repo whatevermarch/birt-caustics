@@ -5,11 +5,15 @@
 void Aggregator::OnCreate(
 	Device* pDevice, 
 	ResourceViewHeaps* pResourceViewHeaps, 
-	DynamicBufferRing* pDynamicBufferRing)
+	DynamicBufferRing* pDynamicBufferRing,
+    uint32_t inputFxCount)
 {
     this->pDevice = pDevice;
     this->pDynamicBufferRing = pDynamicBufferRing;
     this->pResourceViewHeaps = pResourceViewHeaps;
+
+    assert(inputFxCount <= 3);
+    this->numInputFx = inputFxCount;
 
     //  create default sampler for i-light input
     {
@@ -30,7 +34,8 @@ void Aggregator::OnCreate(
 
     //  create pipeline
     DefineList defines;
-    this->createDescriptors(&defines);
+    this->createDescriptor(defines);
+    
     this->aggregator.OnCreate(
         this->pDevice, "Aggregator.glsl", "main", "", 
         this->descriptorSetLayout, 0, 0, 0, &defines);
@@ -50,18 +55,20 @@ void Aggregator::OnDestroy()
     pDynamicBufferRing = nullptr;
 }
 
-void Aggregator::setInputImages(VkImageView dLight, VkImageView iLight, uint32_t dLightWidth, uint32_t dLightHeight)
+void Aggregator::UpdateInputs(uint32_t targetWidth, uint32_t targetHeight,
+        VkImageView targetSRV, VkImageView inputFxSRVs[3])
 {
-    this->outWidth = dLightWidth;
-    this->outHeight = dLightHeight;
+    this->outWidth = targetWidth;
+    this->outHeight = targetHeight;
 
-    VkDescriptorImageInfo imgInfos[2];
-    VkWriteDescriptorSet writes[2];
+    VkDescriptorImageInfo imgInfos[4];
+    VkWriteDescriptorSet writes[4];
+    const uint32_t numInputImages = 1 + this->numInputFx;
 
-    //  of d-light input
+    //  of target input
     imgInfos[0].sampler = VK_NULL_HANDLE;
     imgInfos[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    imgInfos[0].imageView = dLight;
+    imgInfos[0].imageView = targetSRV;
 
     writes[0] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -73,20 +80,23 @@ void Aggregator::setInputImages(VkImageView dLight, VkImageView iLight, uint32_t
     writes[0].dstBinding = 1;
     writes[0].dstArrayElement = 0;
 
-    //  of i-light input
-    imgInfos[1].sampler = this->sampler_default;
-    imgInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imgInfos[1].imageView = iLight;
+    //  of input fx
+    for(uint32_t i = 1; i <= this->numInputFx; i++)
+    {
+        imgInfos[i].sampler = this->sampler_default;
+        imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        imgInfos[i].imageView = inputFxSRVs[i - 1];
 
-    writes[1] = writes[0];
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &imgInfos[1];
-    writes[1].dstBinding = 2;
+        writes[i] = writes[0];
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &imgInfos[i];
+        writes[i].dstBinding = i + 1;
+    }
 
-    vkUpdateDescriptorSets(this->pDevice->GetDevice(), 2, writes, 0, NULL);
+    vkUpdateDescriptorSets(this->pDevice->GetDevice(), numInputImages, writes, 0, NULL);
 }
 
-void Aggregator::Draw(VkCommandBuffer cmdbuf, float weight)
+void Aggregator::Draw(VkCommandBuffer cmdbuf, const float weights[4])
 {
     ::SetPerfMarkerBegin(cmdbuf, "Aggregator");
 
@@ -95,7 +105,7 @@ void Aggregator::Draw(VkCommandBuffer cmdbuf, float weight)
     {
         Aggregator::Constants* pAllocData;
         this->pDynamicBufferRing->AllocConstantBuffer(sizeof(Aggregator::Constants), (void**)&pAllocData, &descInfo_constants);
-        pAllocData->weight = weight;
+        pAllocData->weights = XMLoadFloat4((const XMFLOAT4*)weights);
         pAllocData->imgWidth = this->outWidth;
         pAllocData->imgHeight = this->outHeight;
     }
@@ -108,37 +118,44 @@ void Aggregator::Draw(VkCommandBuffer cmdbuf, float weight)
     ::SetPerfMarkerEnd(cmdbuf);
 }
 
-void Aggregator::createDescriptors(DefineList* pDefines)
+void Aggregator::createDescriptor(DefineList& defines)
 {
     //  define bindings
-    std::vector<VkDescriptorSetLayoutBinding> layoutBindings(3);
-    layoutBindings[0].binding = 0;
-    layoutBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-    layoutBindings[0].descriptorCount = 1;
-    layoutBindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    layoutBindings[0].pImmutableSamplers = NULL;
-    (*pDefines)["ID_Params"] = std::to_string(layoutBindings[0].binding);
+    const uint32_t numInputs = 2 + this->numInputFx;
+    std::vector<VkDescriptorSetLayoutBinding> layoutBindings(numInputs);
+    uint32_t inputIdx = 0;
 
-    layoutBindings[1].binding = 1;
-    layoutBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    layoutBindings[1].descriptorCount = 1;
-    layoutBindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    layoutBindings[1].pImmutableSamplers = NULL;
-    (*pDefines)["ID_DLight"] = std::to_string(layoutBindings[1].binding);
+    layoutBindings[inputIdx].binding = inputIdx;
+    layoutBindings[inputIdx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    layoutBindings[inputIdx].descriptorCount = 1;
+    layoutBindings[inputIdx].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    layoutBindings[inputIdx].pImmutableSamplers = NULL;
+    defines["ID_Params"] = std::to_string(inputIdx++);
 
-    layoutBindings[2].binding = 2;
-    layoutBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    layoutBindings[2].descriptorCount = 1;
-    layoutBindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    layoutBindings[2].pImmutableSamplers = NULL;
-    (*pDefines)["ID_ILight"] = std::to_string(layoutBindings[2].binding);
+    layoutBindings[inputIdx].binding = inputIdx;
+    layoutBindings[inputIdx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    layoutBindings[inputIdx].descriptorCount = 1;
+    layoutBindings[inputIdx].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    layoutBindings[inputIdx].pImmutableSamplers = NULL;
+    defines["ID_Target"] = std::to_string(inputIdx++);
+
+    for (uint32_t i = 0; i < this->numInputFx; i++)
+    {
+        layoutBindings[inputIdx].binding = inputIdx;
+        layoutBindings[inputIdx].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        layoutBindings[inputIdx].descriptorCount = 1;
+        layoutBindings[inputIdx].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        layoutBindings[inputIdx].pImmutableSamplers = NULL;
+        defines[std::string("ID_FX") + std::to_string(i)] = std::to_string(inputIdx++);
+    }
 
     //  allocate descriptor
+    assert(inputIdx == numInputs);
     this->pResourceViewHeaps->CreateDescriptorSetLayoutAndAllocDescriptorSet(
         &layoutBindings,
         &this->descriptorSetLayout,
         &this->descriptorSet);
 
-    //  update binding 0 (dynamic buffer)
+    //  immediately update binding 0 (dynamic buffer)
     this->pDynamicBufferRing->SetDescriptorSet(0, sizeof(Aggregator::Constants), this->descriptorSet);
 }

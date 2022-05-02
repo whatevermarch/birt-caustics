@@ -10,8 +10,20 @@ const bool VALIDATION_ENABLED = false;
 #endif
 
 #define APP_NAME "BIRT Caustics v0.1"
-#define CAULDRON_MEDIA_PATH "..\\res\\Cauldron-Media\\"
 
+#define RESOURCES_PATH "..\\res\\"
+
+#ifdef USE_TEST_SCENE
+// For CornellBox
+#define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\test\\"
+#define SCENE_FILENAME "test_x1.gltf" 
+// change to "test_x4" for testing more precise Caustics Mapping.
+// DON'T FORGET!! to change the vertices count in CausticsMapping.cpp::Draw() accordingly.
+#else
+// For Sponza
+#define SCENE_PATH RESOURCES_PATH "Cauldron-Media\\Sponza\\glTF\\"
+#define SCENE_FILENAME "Sponza.gltf" 
+#endif
 
 class App : public FrameworkWindows
 {
@@ -54,6 +66,13 @@ protected:
     //  time (ms.)
     double deltaTime;
     double lastFrameTime;
+
+    //  caustics profiling
+    //  workaround: target only one unit
+    std::vector<float> profTimes;
+    std::vector<float> accumProfTimes;
+    unsigned int accumCount = 0;
+    double accumInSec = 0;
 };
 
 
@@ -69,12 +88,12 @@ void App::OnCreate(HWND hWnd)
 {
     //  check if cauldron-media repo exists
     //  this repo contains default multimedia and scene files needed for the first phase of the development.
-    DWORD dwAttrib = GetFileAttributes(CAULDRON_MEDIA_PATH);
+    /*DWORD dwAttrib = GetFileAttributes(CAULDRON_MEDIA_PATH);
     if ((dwAttrib == INVALID_FILE_ATTRIBUTES) || ((dwAttrib & FILE_ATTRIBUTE_DIRECTORY)) == 0)
     {
-        MessageBox(NULL, "Media files not found!\n\nPlease check the readme on how to get the media files.", "Cauldron Panic!", MB_ICONERROR);
+        MessageBox(NULL, "Scene files not found!\n\nPlease check the readme on how to get the media files.", "Cauldron Panic!", MB_ICONERROR);
         exit(0);
-    }
+    }*/
 
     //  create device
     this->device.OnCreate("My App", "My Engine", VALIDATION_ENABLED, VALIDATION_ENABLED, hWnd);
@@ -97,25 +116,33 @@ void App::OnCreate(HWND hWnd)
 
     //  setup initial camera settings
     {
-        XMVECTOR eyePos = XMVectorSet(5.13694048f, 1.89175785, -1.40289795f, 0.f);
-        XMVECTOR lookDir = XMVectorSet(0.703276634f, 1.02280307f, 0.218072295f, 0.f);
+#ifdef USE_TEST_SCENE
+        const XMVECTOR eyePos = XMVectorSet(0.f, 0.852f, 2.1f, 0.f);
+        const XMVECTOR lookDir = XMVectorSet(0.f, 0.35f, 0.f, 0.f);
+#else
+        const XMVECTOR eyePos = XMVectorSet(-4.4918f, 2.9941f, -1.3915f, 0.f);
+        const XMVECTOR lookDir = XMVectorSet(-9.0900f, 0.8032f, 0.2913f, 0.f);
+#endif
         this->camera.LookAt(eyePos, lookDir);
     }
 
     //  load scene (metadata)
     this->sceneLoader = new SceneLoader();
-    if (!this->sceneLoader->Load(std::string(CAULDRON_MEDIA_PATH) + "Sponza\\glTF\\", "Sponza.gltf"))
+    if (!this->sceneLoader->Load(SCENE_PATH, SCENE_FILENAME))
     {
-        MessageBox(NULL, "The selected model couldn't be found, please check the documentation", "Cauldron Panic!", MB_ICONERROR);
+        MessageBox(NULL, "The selected model couldn't be found, please check the file path", "Cauldron Panic!", MB_ICONERROR);
         exit(0);
     }
-
+#ifndef USE_TEST_SCENE
     //  tweak scene data
     {
         //  Sponza has no light cached in the data, so we add one
         tfNode n;
-        n.m_tranform.LookAt(PolarToVector(XM_PI / 2.0f, 0.58f) * 3.5f, XMVectorSet(0, 0, 0, 0));
         //n.m_tranform.LookAt(this->renderer_state.sunDir * 20.5f, XMVectorSet(0, 0, 0, 0));
+
+        const XMVECTOR lightPos = XMVectorSet(-6.8f, 2.1f, -0.35f, 0.f);
+        const XMVECTOR shineDir = XMVectorSet(-8.1f, -0.522f, -0.35f, 0.f);
+        n.m_tranform.LookAt(lightPos, shineDir);
 
         tfLight l;
         l.m_type = tfLight::LIGHT_SPOTLIGHT;
@@ -127,7 +154,7 @@ void App::OnCreate(HWND hWnd)
 
         this->sceneLoader->AddLight(n, l);
     }
-
+#endif
     //  init GUI subsystem
     ImGUI_Init((void*)hWnd);
 }
@@ -211,6 +238,9 @@ void App::OnRender()
             cumulativeFrameTime = 0.;
         }
 
+        // run the animation
+        this->renderer_state.deltaTime = this->deltaTime;
+
         if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::Text("Resolution\t: %i x %i", this->m_Width, this->m_Height);
@@ -241,6 +271,43 @@ void App::OnRender()
         if (ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::SliderFloat("D/I Contribution", &this->renderer_state.DIWeight, 0.f, 1.f);
+        }
+
+        if (ImGui::CollapsingHeader("Profiler", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            //  workaround: only target caustics
+            const int causticsTimeIndex = 3;
+
+            const std::vector<TimeStamp>& timeStamps = this->renderer->getTimeStamps();
+            if (timeStamps.size() > 0)
+            {
+                this->accumProfTimes.resize(timeStamps.size());
+                this->profTimes.resize(timeStamps.size());
+
+                for (uint32_t i = 0; i < timeStamps.size(); i++)
+                    this->accumProfTimes[i] += timeStamps[i].m_microseconds;
+
+                this->accumInSec += this->deltaTime;
+                this->accumCount += 1;
+
+                if (this->accumInSec >= 1000.0)
+                {
+                    for (uint32_t i = 0; i < timeStamps.size(); i++)
+                    {
+                        this->profTimes[i] = this->accumProfTimes[i] / this->accumCount;
+                        this->accumProfTimes[i] = 0;
+                    }
+
+                    this->accumInSec = 0;
+                    this->accumCount = 0;
+                }
+
+                //ImGui::Text("%-22s: %7.1f", timeStamps[causticsTimeIndex].m_label.c_str(), this->profTime);
+                for (uint32_t i = 0; i < timeStamps.size(); i++)
+                {
+                    ImGui::Text("%-22s: %7.1f", timeStamps[i].m_label.c_str(), this->profTimes[i]);
+                }
+            }
         }
 
         ImGui::End();
