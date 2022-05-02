@@ -1,6 +1,8 @@
 # birt-caustics
 Bidirectional Image-space Ray Tracing for Real-time Caustics
 
+![teaser](https://user-images.githubusercontent.com/14962580/166307614-b9014613-528f-439b-b7ee-574e534724c8.png)
+
 ## How to build
 These software are needed.
 
