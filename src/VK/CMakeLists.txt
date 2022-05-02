@@ -6,7 +6,6 @@ set(headers
 	pch.h
 	Renderer.h
 	DirectLighting.h
-	IndirectLighting.h
 	Aggregator.h
 	Caustics.h
 	SVGF.h
@@ -20,7 +19,6 @@ set(sources
 	App.cpp
 	Renderer.cpp
 	DirectLighting.cpp
-	IndirectLighting.cpp
 	Aggregator.cpp
 	Caustics.cpp
 	SVGF.cpp
@@ -33,7 +31,6 @@ set(shaders
 	PBRLighting.h
 	Bypass-vert.glsl
 	DirectLighting-frag.glsl
-	IndirectLighting-frag.glsl
 	Aggregator.glsl
 	RGBEConversion.h
 	PhotonTracer.glsl
@@ -48,7 +45,6 @@ set(shaders
 	CausticsMapping-frag.glsl
 	CausticsMapReproj.glsl
 	Ocean-vert.glsl
-	Ocean-tess.glsl
 	Ocean-frag.glsl)
 source_group("Shader Files" FILES ${shaders})
 set_source_files_properties(${shaders} PROPERTIES VS_TOOL_OVERRIDE "Text")
