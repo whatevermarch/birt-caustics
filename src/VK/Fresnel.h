@@ -12,8 +12,8 @@ public:
         ISRTTransform camera;
         
         float samplingMapScale = 2.0f;
-        float rayThickness_xy;
-        float rayThickness_z;
+        float IOR;
+        float rayThickness;
         float tMax = 100.f;
     };
 

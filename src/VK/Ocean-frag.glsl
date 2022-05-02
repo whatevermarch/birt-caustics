@@ -135,16 +135,17 @@ vec3 getSpotLightFlux(Light light, vec3 pointToLight)
 
 vec4 getNormal(vec2 uv)
 {
-    // ToDo: finish getting normals from textures
-    const vec3 normal = texture(u_normalMaps, vec3(uv / 4.0f, float(u_push.iter))).rgb;
+    // In Blender, up-axis is z
+    vec3 normal = texture(u_normalMaps, vec3(uv * 3.0f, float(u_push.iter))).rbg;
+    normal.z = 1.0f - normal.z;
 
-    return vec4((normal + 1) / 2, 1.0f);
+    return vec4(normal, 1.0f);
 }
 
 void main()
 {
     // define water color
-    const vec3 waterColor = vec3(0.18f, 0.4f, 0.69f);
+    const vec3 waterColor = vec3(0.18f, 0.4f, 0.69f); // deep blue sea
     const float alpha = 1.0f;
 
 #ifdef HAS_MOTION_VECTORS_RT 
@@ -165,7 +166,8 @@ void main()
     // for light RSM => output 'flux' instead
     else 
     {
-        vec3 flux = waterColor;
+        Light light = u_params.rsmLight;
+        vec3 flux = vec3(1);
         
         //  now RSM supports only Directional Light and Spotlight
         int lightType = u_params.rsmLight.type;
@@ -176,7 +178,13 @@ void main()
         else if (lightType == LightType_Spot)
         {
             vec3 pointToLight = u_params.rsmLight.position - Input.WorldPos;
+            // workaround: area of pixel in view-space will be calculated on Photon Tracing part instead.
+            const float actualCos = dot(normalize(-light.direction), normalize(-pointToLight));
+            const float pointDistance = length(pointToLight);
+            //const float actualSolidAngle = 2 * M_PI * sqrt(1 - light.outerConeCos * light.outerConeCos);
+            const float solidAngle = 4 * M_PI; // assuming that a spotlight is just a point light with stencil solid angle
             flux *= getSpotLightFlux(u_params.rsmLight, pointToLight);
+            flux = flux * actualCos / (pointDistance * pointDistance * solidAngle);
         }
         
         Output_emissiveColor = vec4(flux, alpha);
@@ -184,11 +192,11 @@ void main()
 #endif
 
 #ifdef HAS_SPECULAR_ROUGHNESS_RT
-    Output_specularRoughness = vec4(0.4f, 0.5f, 0.55f, 0.005f); // some medium white
+    Output_specularRoughness = vec4(vec3(0), 0.005f);
 #endif
 
 #ifdef HAS_DIFFUSE_RT
-    Output_diffuseColor = vec4(waterColor, 1.0f); // deep blue sea
+    Output_diffuseColor = vec4(vec3(0), 1.0f);
 #endif
 
 #ifdef HAS_NORMALS_RT

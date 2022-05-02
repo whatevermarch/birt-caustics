@@ -13,10 +13,17 @@ const bool VALIDATION_ENABLED = false;
 
 #define RESOURCES_PATH "..\\res\\"
 
+#ifdef USE_TEST_SCENE
+// For CornellBox
 #define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\test\\"
 #define SCENE_FILENAME "test_x1.gltf" 
 // change to "test_x4" for testing more precise Caustics Mapping.
 // DON'T FORGET!! to change the vertices count in CausticsMapping.cpp::Draw() accordingly.
+#else
+// For Sponza
+#define SCENE_PATH RESOURCES_PATH "Cauldron-Media\\Sponza\\glTF\\"
+#define SCENE_FILENAME "Sponza.gltf" 
+#endif
 
 class App : public FrameworkWindows
 {
@@ -62,8 +69,8 @@ protected:
 
     //  caustics profiling
     //  workaround: target only one unit
-    float profTime = 0;
-    float accumProfTime = 0;
+    std::vector<float> profTimes;
+    std::vector<float> accumProfTimes;
     unsigned int accumCount = 0;
     double accumInSec = 0;
 };
@@ -109,8 +116,13 @@ void App::OnCreate(HWND hWnd)
 
     //  setup initial camera settings
     {
-        XMVECTOR eyePos = XMVectorSet(5.13694048f, 1.89175785, -1.40289795f, 0.f);
-        XMVECTOR lookDir = XMVectorSet(0.703276634f, 1.02280307f, 0.218072295f, 0.f);
+#ifdef USE_TEST_SCENE
+        const XMVECTOR eyePos = XMVectorSet(0.f, 0.852f, 2.1f, 0.f);
+        const XMVECTOR lookDir = XMVectorSet(0.f, 0.35f, 0.f, 0.f);
+#else
+        const XMVECTOR eyePos = XMVectorSet(-4.4918f, 2.9941f, -1.3915f, 0.f);
+        const XMVECTOR lookDir = XMVectorSet(-9.0900f, 0.8032f, 0.2913f, 0.f);
+#endif
         this->camera.LookAt(eyePos, lookDir);
     }
 
@@ -121,25 +133,28 @@ void App::OnCreate(HWND hWnd)
         MessageBox(NULL, "The selected model couldn't be found, please check the file path", "Cauldron Panic!", MB_ICONERROR);
         exit(0);
     }
+#ifndef USE_TEST_SCENE
+    //  tweak scene data
+    {
+        //  Sponza has no light cached in the data, so we add one
+        tfNode n;
+        //n.m_tranform.LookAt(this->renderer_state.sunDir * 20.5f, XMVectorSet(0, 0, 0, 0));
 
-    ////  tweak scene data
-    //{
-    //    //  Sponza has no light cached in the data, so we add one
-    //    tfNode n;
-    //    n.m_tranform.LookAt(PolarToVector(XM_PI / 2.0f, 0.58f) * 3.5f, XMVectorSet(0, 0, 0, 0));
-    //    //n.m_tranform.LookAt(this->renderer_state.sunDir * 20.5f, XMVectorSet(0, 0, 0, 0));
+        const XMVECTOR lightPos = XMVectorSet(-6.8f, 2.1f, -0.35f, 0.f);
+        const XMVECTOR shineDir = XMVectorSet(-8.1f, -0.522f, -0.35f, 0.f);
+        n.m_tranform.LookAt(lightPos, shineDir);
 
-    //    tfLight l;
-    //    l.m_type = tfLight::LIGHT_SPOTLIGHT;
-    //    l.m_intensity = 10.f;
-    //    l.m_color = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
-    //    l.m_range = 15;
-    //    l.m_outerConeAngle = XM_PI / 4.0f;
-    //    l.m_innerConeAngle = (XM_PI / 4.0f) * 0.9f;
+        tfLight l;
+        l.m_type = tfLight::LIGHT_SPOTLIGHT;
+        l.m_intensity = 10.f;
+        l.m_color = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
+        l.m_range = 15;
+        l.m_outerConeAngle = XM_PI / 4.0f;
+        l.m_innerConeAngle = (XM_PI / 4.0f) * 0.9f;
 
-    //    this->sceneLoader->AddLight(n, l);
-    //}
-
+        this->sceneLoader->AddLight(n, l);
+    }
+#endif
     //  init GUI subsystem
     ImGUI_Init((void*)hWnd);
 }
@@ -264,26 +279,34 @@ void App::OnRender()
             const int causticsTimeIndex = 3;
 
             const std::vector<TimeStamp>& timeStamps = this->renderer->getTimeStamps();
-            if (timeStamps.size() > causticsTimeIndex + 1)
+            if (timeStamps.size() > 0)
             {
+                this->accumProfTimes.resize(timeStamps.size());
+                this->profTimes.resize(timeStamps.size());
+
+                for (uint32_t i = 0; i < timeStamps.size(); i++)
+                    this->accumProfTimes[i] += timeStamps[i].m_microseconds;
+
                 this->accumInSec += this->deltaTime;
-                this->accumProfTime += timeStamps[causticsTimeIndex].m_microseconds;
                 this->accumCount += 1;
 
                 if (this->accumInSec >= 1000.0)
                 {
-                    this->profTime = this->accumProfTime / this->accumCount;
+                    for (uint32_t i = 0; i < timeStamps.size(); i++)
+                    {
+                        this->profTimes[i] = this->accumProfTimes[i] / this->accumCount;
+                        this->accumProfTimes[i] = 0;
+                    }
 
                     this->accumInSec = 0;
-                    this->accumProfTime = 0;
                     this->accumCount = 0;
                 }
 
-                ImGui::Text("%-22s: %7.1f", timeStamps[causticsTimeIndex].m_label.c_str(), this->profTime);
-                //for (uint32_t i = 0; i < timeStamps.size(); i++)
-                //{
-                //    ImGui::Text("%-22s: %7.1f", timeStamps[i].m_label.c_str(), timeStamps[i].m_microseconds);
-                //}
+                //ImGui::Text("%-22s: %7.1f", timeStamps[causticsTimeIndex].m_label.c_str(), this->profTime);
+                for (uint32_t i = 0; i < timeStamps.size(); i++)
+                {
+                    ImGui::Text("%-22s: %7.1f", timeStamps[i].m_label.c_str(), this->profTimes[i]);
+                }
             }
         }
 

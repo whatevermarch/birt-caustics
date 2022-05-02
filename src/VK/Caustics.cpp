@@ -3,7 +3,7 @@
 #include <random>
 
 #define BLOCK_SIZE 16
-#define MAX_PHOTON_COUNT 524288u // 2e19
+#define MAX_PHOTON_COUNT (1u << 20) // 524288u // 2e19
 
 void Caustics::OnCreate(
 	Device* pDevice, 
@@ -397,8 +397,9 @@ void Caustics::Draw(VkCommandBuffer commandBuffer, const VkRect2D& renderArea, c
 		cmConst.lightNearZ = nearZ;
 
 		//	For cmConst.world -> it will be filled inside the CausticsMapping::Draw method.
-
 		this->causticsMap.Draw(commandBuffer, renderArea, cmConst);
+
+		this->pGPUTimeStamps->GetTimeStamp(commandBuffer, "Caustics Mapping");
 	}
 #endif
 	SetPerfMarkerEnd(commandBuffer);
@@ -545,11 +546,13 @@ void Caustics::createPhotonMapperPipeline(const DefineList& defines)
 		"#extension GL_ARB_shading_language_420pack : enable\n"
 		"layout (location = 0) in float in_packedIrradiance;\n"
 		"layout (location = 0) out vec4 out_irradiance;\n"
-		"#include \"RGBEConversion.h\"\n"
+		//"#include \"RGBEConversion.h\"\n"
 		"void main() {\n"
 		"   if (in_packedIrradiance == 0)\n"
 		"       discard;\n"
-		"   out_irradiance = vec4(RGBEToFloat3(floatBitsToUint(in_packedIrradiance)), 1.0f);\n"
+		//"   out_irradiance = vec4(RGBEToFloat3(floatBitsToUint(in_packedIrradiance)), 1.0f);\n"
+		//	workaround: there's smth wrong with RGBE conversion
+		"   out_irradiance = vec4(vec3(in_packedIrradiance), 1.0f);\n"
 		"}\n";
 
 	VkPipelineShaderStageCreateInfo vertexShader = {}, fragmentShader = {};

@@ -7,6 +7,8 @@
 #include "Ocean.h"
 #include "Aggregator.h"
 
+//#define USE_TEST_SCENE
+
 class Renderer
 {
 public:

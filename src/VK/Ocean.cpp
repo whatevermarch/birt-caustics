@@ -1,9 +1,6 @@
 #include "Ocean.h"
 
 #define VERTEX_SHADER_FILENAME "Ocean-vert.glsl"
-
-#define TESSELATION_SHADER_FILENAME "Ocean-tess.glsl"
-
 #define FRAGMENT_SHADER_FILENAME "Ocean-frag.glsl"
 
 void Ocean::OnCreate(
@@ -28,14 +25,32 @@ void Ocean::OnCreate(
         pUploadHeap,
         normalMapsFilepath,
         fileStart, fileEnd - fileStart + 1,
-        true // sRGB according to the images
+        false
     );
     assert(res);
 
 	pUploadHeap->FlushAndFinish();
 
 	m_normalMapArray.CreateSRV(&m_normalMapArraySRV);
-	m_samplerDefault = CreateSampler(pDevice->GetDevice(), true);
+    m_samplerDefault = [&]() -> VkSampler {
+        VkSamplerCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        info.magFilter = VK_FILTER_LINEAR;
+        info.minFilter = info.magFilter;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        info.minLod = -1000;
+        info.maxLod = 1000;
+        info.maxAnisotropy = 1.0f;
+
+        VkSampler sampler;
+        VkResult res = vkCreateSampler(pDevice->GetDevice(), &info, NULL, &sampler);
+        assert(res == VK_SUCCESS);
+
+        return sampler;
+    }();
 
 	// create descriptors
     DefineList defines, rsmDefines, gbufDefines;

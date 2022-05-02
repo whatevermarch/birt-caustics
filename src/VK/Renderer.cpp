@@ -5,9 +5,16 @@
 // We are queuing (2 backbuffers + 0.5) frames, so we need to triple buffer the command lists
 //	ToDo : let's experiment if 2 is sufficient.
 static const int backBufferCount = 3;
+static const uint32_t tonemappingMode = 5; // URQ
 
 //  Shadow map size (the texture dimension is shadowmapSize * shadowmapSize)
+#ifdef USE_TEST_SCENE
 static const uint32_t shadowmapSize = 512;
+static const float waterIOR = 2.4f;
+#else
+static const uint32_t shadowmapSize = 1024;
+static const float waterIOR = 1.33f;
+#endif
 
 void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 {
@@ -206,7 +213,7 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     //  ocean
     {
         this->ocean.OnCreate(this->pDevice, &this->uploadHeap, &this->resViewHeaps, &this->dBufferRing,
-            "..\\res\\ocean\\normal\\####.png", &this->rp_RSM_trans, &this->rp_gBuffer_trans, VK_SAMPLE_COUNT_1_BIT);
+            "..\\res\\Ocean\\normal\\####.png", &this->rp_RSM_trans, &this->rp_gBuffer_trans, VK_SAMPLE_COUNT_1_BIT);
     }
 
     //  initialize post-processing handles
@@ -398,13 +405,16 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     this->accumTime += pState->deltaTime;
     if (this->accumTime > 0)
     {
-        const uint32_t iterFwd = (uint32_t)(this->accumTime / 33.33);
+        const double interval = 1000.0 / 24;
+        const uint32_t iterFwd = (uint32_t)(this->accumTime / interval);
         if (iterFwd > 0)
         {
             this->accumTime = 0;
             this->oceanIter = (this->oceanIter + iterFwd) % 20;
         }
     }
+    // for tests and captures
+    // this->oceanIter = 15; 
 
     //  preparing for a new frame
     this->dBufferRing.OnBeginFrame();
@@ -426,9 +436,15 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
 
     //  predefine ocean
     Ocean::Constants oceanConst;
-    oceanConst.currWorld = Ocean::Constants::calculateWorldMatrix(
+    //  config: test
+    /*oceanConst.currWorld = Ocean::Constants::calculateWorldMatrix(
         { 0, 0.35f, 0 },
         { 1.0f, 1.0f, 1.0f }
+    );*/
+    //  config: sponza
+    oceanConst.currWorld = Ocean::Constants::calculateWorldMatrix(
+        { 0, 0.75f, 0 },
+        { 12.f, 12.f, 12.f }
     );
     oceanConst.prevWorld = oceanConst.currWorld;
     
@@ -452,7 +468,6 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         //  setup light render target
         int lightIndex = 0;
         pPerFrameData->lights[lightIndex].shadowMapIndex = 0;
-        pPerFrameData->lights[lightIndex].intensity = 8.5f; // just to try
         if (pPerFrameData->lights[lightIndex].type == LightType_Directional)
         {
             pPerFrameData->lights[lightIndex].depthBias = 100.0f / 100000.0f;
@@ -604,11 +619,13 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_RSM_trans.BeginPass(cmdBuf1, rectScissor_RSM);
         {
             vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 0); // need class design
-            //this->pRSMPass->DrawBatchList(cmdBuf1, &transparents, rsmIndex);
-
+#ifdef USE_TEST_SCENE
+            this->pRSMPass->DrawBatchList(cmdBuf1, &transparents, rsmIndex);
+#else
             oceanConst.currViewProj = pPerFrameData->lights[rsmIndex].mLightViewProj;
             oceanConst.rsmLight = pPerFrameData->lights[rsmIndex];
             this->ocean.Draw(cmdBuf1, oceanConst, this->oceanIter, rsmIndex);
+#endif
         }
         this->rp_RSM_trans.EndPass(cmdBuf1);
 
@@ -642,9 +659,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         causticsConstants.camera.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
         causticsConstants.camera.nearPlane = pCamera->GetNearPlane();
         causticsConstants.camera.farPlane = pCamera->GetFarPlane();
-        causticsConstants.samplingMapScale = 1.5f;
-        causticsConstants.rayThickness_xy = 0.02f;
-        causticsConstants.rayThickness_z = 0.015f;
+        causticsConstants.samplingMapScale = 1.25f;
+        causticsConstants.IOR = waterIOR;
+        causticsConstants.rayThickness = 0.015f;
         causticsConstants.tMax = 100.f;
 
         //  ToDo : setup this pass to utilize multiple light src. (<=4)
@@ -692,11 +709,13 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         this->rp_gBuffer_trans.BeginPass(cmdBuf1, rectScissor_GBuffer);
         {
             vkCmdSetStencilReference(cmdBuf1, VK_STENCIL_FACE_FRONT_AND_BACK, 1);  // need class design
-            //this->pGltfPbrPass->DrawBatchList(cmdBuf1, &transparents);
-
+#ifdef USE_TEST_SCENE
+            this->pGltfPbrPass->DrawBatchList(cmdBuf1, &transparents);
+#else
             oceanConst.currViewProj = pPerFrameData->mCameraCurrViewProj;
             oceanConst.prevViewProj = pPerFrameData->mCameraPrevViewProj;
             this->ocean.Draw(cmdBuf1, oceanConst, this->oceanIter);
+#endif
         }
         this->rp_gBuffer_trans.EndPass(cmdBuf1);
     }
@@ -733,9 +752,9 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         fresnelConst.camera.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
         fresnelConst.camera.nearPlane = pCamera->GetNearPlane();
         fresnelConst.camera.farPlane = pCamera->GetFarPlane();
-        fresnelConst.samplingMapScale = 1.5f;
-        fresnelConst.rayThickness_xy = 0.02f;
-        fresnelConst.rayThickness_z = 0.015f;
+        fresnelConst.samplingMapScale = 1.25f;
+        fresnelConst.IOR = waterIOR;
+        fresnelConst.rayThickness = 0.015f;
         fresnelConst.tMax = 100.f;
 
         this->fresnel->Draw(cmdBuf1, this->rectScissor, fresnelConst);
@@ -817,7 +836,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
     //  do tonemapping
     {
         //  Note : TAA already done transition on 'm_HDR' for us, so we don't need explicit transition
-        this->toneMapping.Draw(cmdBuf2, this->pGBuffer->m_HDRSRV, 1.f, 0);
+        this->toneMapping.Draw(cmdBuf2, this->pGBuffer->m_HDRSRV, 1.f, tonemappingMode);
     }
 
     //  render GUI

@@ -30,8 +30,8 @@ struct CausticsParams
     TransformParams lights[4]; // we have 4 quarters of RSM
 
     float samplingMapScale;
-    float rayThickness_xy;
-    float rayThickness_z;
+    float IOR;
+    float rayThickness;
     float tMax;
 };
 layout (std140, binding = ID_Params) uniform Params 
@@ -97,7 +97,6 @@ layout (std140, binding = ID_HitPosIrradiance) buffer HitPositionAndPackedIrradi
 #include "RGBEConversion.h"
 #include "ImageSpaceRT.h"
 
-const float IOR = 1.33;
 const float epsilon = 1e-4;
 
 vec2 sampleNoise()
@@ -159,8 +158,9 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
     vec3 bounceDir;
 
     const vec3 view = normalize(u_params.lights[rsmLightIndex].position.xyz - worldPos);
+    const float distanceFromLight = length(u_params.lights[rsmLightIndex].position.xyz - worldPos);
 
-    const float iorRatio = 1.0f / IOR; // air -> water
+    const float iorRatio = 1.0f / u_params.IOR; // air -> water
     const vec3 refracted = refract(-view, normal, iorRatio);
 
     // In the case of total internal reflection the refract() function
@@ -175,7 +175,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
         const float cosIncident = dot(normal, view);
         const float cosTransmitted = -dot(refracted, normal);
 
-        fresnel = fresnelUnpolarized(cosIncident, cosTransmitted, 1.0f, IOR);
+        fresnel = fresnelUnpolarized(cosIncident, cosTransmitted, 1.0f, u_params.IOR);
     }
 
     // random and see if we go for reflection or refraction
@@ -186,7 +186,12 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
 
     origin = worldPos;
     direction = bounceDir;
-    power = fluxAlpha.xyz;
+    // workaround: area of pixel in view-space will be calculated on Photon Tracing part instead.
+    const float pixelArea = (4 * distanceFromLight * distanceFromLight) / (rsmDim.x * rsmDim.y * 
+                                        u_params.lights[rsmLightIndex].invTanHalfFovH * u_params.lights[rsmLightIndex].invTanHalfFovV);
+    power = fluxAlpha.xyz * pixelArea;
+    // workaround: compensate the intensity, since PBR shader overpowers the intensity
+    power *= 10.f;
 
     return 0;
 }
@@ -207,14 +212,12 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
     //  note : we ignore bHit and lastCoord from RSM tracing, 
     //         because we don't rule out hitting in this pass.
     float t;
-    //traceOnView(lastPos, direction, u_params.lights[rsmLightIndex], false, t, lastCoord);
     traceOnView(lastPos, direction, u_params.lights[rsmLightIndex], false, u_params.tMax, t, lastCoord);
     //if(u_params.tMax < 0) t = 0;
     lastPos = lastPos + direction * t;
     lastT += t;
 
     // continue tracing in screen space
-    //bHit = traceOnView(lastPos, direction, u_params.camera, true, t, lastCoord);
     bHit = traceOnView(lastPos, direction, u_params.camera, true, u_params.tMax, t, lastCoord);
     lastPos = lastPos + direction * t;
     lastT += t;
@@ -229,8 +232,11 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
         vec3 visibleNormal = texture(u_gbufNormal, lastCoord).rgb * 2.0f - 1.0f;
         float visibleDepth = toViewDepth(fetchGBufDepth(lastCoord, 0), 
                                 u_params.camera.nearPlane, u_params.camera.farPlane);
-        if (dot(-direction, visibleNormal) >= -epsilon &&
-            abs(viewPos.z - visibleDepth) <= u_params.rayThickness_z) 
+        
+        AngularInfo angularInfo = getAngularInfo(-direction, visibleNormal, -viewPos.xyz);
+        //const float NdotL = dot(-direction, visibleNormal);
+        if (/*NdotL >= -epsilon*/ angularInfo.NdotL > 0 &&
+            abs(viewPos.z - visibleDepth) <= u_params.rayThickness) 
         {
             const vec2 projPos = vec2(2, -2) * (lastCoord - 0.5f);
             const float projConstA = u_params.camera.farPlane / (u_params.camera.nearPlane - u_params.camera.farPlane);
@@ -246,26 +252,19 @@ vec4 trace(vec3 origin, vec3 direction, vec3 power)
             const float invPixelArea = screenSize.x * screenSize.y * 
                                         u_params.camera.invTanHalfFovH * u_params.camera.invTanHalfFovV / 
                                         (4 * distanceFromEye * distanceFromEye);
-            const vec3 irradiance = power * invPixelArea * 0.1f;
+
+            //  assuming that the receiver surface is diffuse, 
+            //  apply lambertian BRDF and angle attenuation (due to rendering equation).
+            const vec3 irradiance = power * invPixelArea * angularInfo.NdotL / M_PI; 
 
             //  compress irradiance
-            irradiance_32b = uintBitsToFloat(float3ToRGBE(irradiance));
+            //irradiance_32b = uintBitsToFloat(float3ToRGBE(irradiance));
+            //  workaround: there's smth wrong with RGBE conversion
+            irradiance_32b = getPerceivedBrightness(irradiance);
         }
     }
 
     return vec4(hitPos, irradiance_32b);
-
-    // const vec4 viewPos = u_params.camera.view * vec4(lastPos, 1.0f);
-    // const vec2 proj = vec2(u_params.camera.invTanHalfFovH, u_params.camera.invTanHalfFovV);
-    // const vec2 projPos = viewPos.xy * proj / (-viewPos.z);
-    // const float projConstA = u_params.camera.farPlane / (u_params.camera.nearPlane - u_params.camera.farPlane);
-    // const float projConstB = projConstA * u_params.camera.nearPlane;
-    // const float projDepth = -projConstA + projConstB / (-viewPos.z);
-
-    // //  this finally guarantee that the ray hits, and the photon is visible to the camera
-    // hitPos = vec3(projPos.x, projPos.y, projDepth);
-
-    // return vec4(hitPos, uintBitsToFloat(float3ToRGBE(vec3(1))));
 }
 
 void main()

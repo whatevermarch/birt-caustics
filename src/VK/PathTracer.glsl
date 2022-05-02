@@ -27,8 +27,8 @@ struct SSRParams
     TransformParams camera;
     
     float samplingMapScale;
-    float rayThickness_xy;
-    float rayThickness_z;
+    float IOR;
+    float rayThickness;
     float tMax;
 };
 layout (std140, binding = ID_Params) uniform Params 
@@ -72,7 +72,6 @@ ivec2 getRSMDepthSize(int mipLevel)
 #include "functions.glsl"
 #include "ImageSpaceRT.h"
 
-const float IOR = 1.33;
 const float epsilon = 1e-4;
 
 vec2 sampleNoise()
@@ -114,7 +113,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
     const vec4 specularRoughness = texture(u_gbufSpecular, normSamplingCoord).rgba;
 
     //  setting roughness cutoff to 30% (perceptualRoughness > 0.3 shall not pass)
-    if (specularRoughness.a > 0.3f || any(lessThanEqual(specularRoughness.rgb, vec3(0.04))))
+    if (specularRoughness.a > 0.3f)
         return 2; // too much roughness for reflective/refractive bouncing
 
     //  determine the direction of the ray be Fresnel's equation
@@ -122,7 +121,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
 
     const vec3 view = normalize(u_params.camera.position.xyz - worldPos);
 
-    const float iorRatio = 1.0f / IOR; // air -> water
+    const float iorRatio = 1.0f / u_params.IOR; // air -> water
     const vec3 refracted = refract(-view, normal, iorRatio);
 
     // In the case of total internal reflection the refract() function
@@ -137,7 +136,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
         const float cosIncident = dot(normal, view);
         const float cosTransmitted = -dot(refracted, normal);
 
-        fresnel = fresnelUnpolarized(cosIncident, cosTransmitted, 1.0f, IOR);
+        fresnel = fresnelUnpolarized(cosIncident, cosTransmitted, 1.0f, u_params.IOR);
     }
 
     // random and see if we go for reflection or refraction
@@ -145,8 +144,6 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec2 texCoord)
         bounceDir = reflect(-view, normal);
     else // refraction
         bounceDir = refracted;
-
-    //bounceDir = refracted;
 
     origin = worldPos;
     direction = bounceDir;
@@ -166,12 +163,11 @@ vec4 trace(vec3 origin, vec3 direction)
     float t;
     bHit = traceOnView(
             origin, direction, 
-            u_params.camera, true, u_params.tMax/*, u_params.rayThickness_z*/,
+            u_params.camera, true, u_params.tMax,
             t, hitCoord);
     
     //  sampling color from the last hit coordinate
     const vec3 color = bHit ? texture(u_backColor, hitCoord).rgb : vec3(0);
-    //const vec3 color = bHit ? texture(u_backColor, hitCoord).rgb : vec3(1,0,0);
 
     return vec4(color, 1);
 }
@@ -187,17 +183,5 @@ void main()
 
     //  trace through depth map
     vec4 color = trace(origin, direction);
-    //vec4 color = vec4((direction + 1.0f) / 2.0f, 1.0f);
-    // const vec4 o = u_params.camera.view * vec4(origin, 1.0f);
-    // const vec4 d = u_params.camera.view * vec4(direction, 0.0f);
-    // const vec4 r = o + d * 100.0f;
-    // const vec2 pv_xy = vec2(u_params.camera.invTanHalfFovH, u_params.camera.invTanHalfFovV);
-    // const vec2 p_o = o.xy * pv_xy / (-o.z);
-    // const vec2 p_r = r.xy * pv_xy / (-r.z);
-    // vec2 move = p_r - p_o;
-    // move.y = -move.y;
-    // vec4 color = length(move) != 0 ? vec4((normalize(move) + 1.0f) / 2.0f, 0.0f, 1.0f) : vec4(0);
-
-    //  ToDo : transform origin point to projection space ans store in image buffer.
     imageStore(img_target, ivec2(texCoord * textureSize(u_gbufSpecular, 0)), color);
 }

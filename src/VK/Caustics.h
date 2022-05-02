@@ -17,8 +17,8 @@ public:
         ISRTTransform lights[4]; // we have 4 quarters of RSM
 
         float samplingMapScale = 2.0f;
-        float rayThickness_xy;
-        float rayThickness_z;
+        float IOR;
+        float rayThickness;
         float tMax = 100.f;
     };
 
