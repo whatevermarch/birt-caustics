@@ -288,10 +288,13 @@ void Fresnel::generateSamplingPoints(UploadHeap& uploadHeap)
 	char texData[noiseDim * noiseDim * bytePerPixel];
 
 	//	use blue noise from file
-	//	load r-component first
 	IMG_INFO img_header;
-	ImgLoader* img = CreateImageLoader("blue_noise_r.png");
-	bool result = img->Load("blue_noise_r.png", 1.f, &img_header);
+	static const auto noiseFile_r = "..\\res\\BlueNoise\\noise_r.png";
+	static const auto noiseFile_g = "..\\res\\BlueNoise\\noise_g.png";
+
+	//	load r-component first
+	ImgLoader* img = CreateImageLoader(noiseFile_r);
+	bool result = img->Load(noiseFile_r, 1.f, &img_header);
 	if (result)
 	{
 		img->CopyPixels(texData, img_header.width * bytePerPixel, img_header.width * bytePerPixel, img_header.height);
@@ -308,8 +311,8 @@ void Fresnel::generateSamplingPoints(UploadHeap& uploadHeap)
 	delete(img);
 
 	//	then load g-component
-	img = CreateImageLoader("blue_noise_g.png");
-	result = img->Load("blue_noise_g.png", 1.f, &img_header);
+	img = CreateImageLoader(noiseFile_g);
+	result = img->Load(noiseFile_g, 1.f, &img_header);
 	if (result)
 	{
 		img->CopyPixels(texData, img_header.width * bytePerPixel, img_header.width * bytePerPixel, img_header.height);
