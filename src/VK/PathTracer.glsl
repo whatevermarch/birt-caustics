@@ -47,7 +47,7 @@ layout (binding = ID_GBufDepth_1toN) uniform sampler2D u_gbufDepth1N;
 float fetchGBufDepth(vec2 coord, int mipLevel)
 {
     return mipLevel == 0 ? texture(u_gbufDepth0, coord).r :
-        textureLod(u_gbufDepth1N, coord, float(mipLevel)).r;
+        textureLod(u_gbufDepth1N, coord, float(mipLevel - 1)).r;
 }
 ivec2 getGBufDepthSize(int mipLevel)
 {

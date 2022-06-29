@@ -117,10 +117,10 @@ void App::OnCreate(HWND hWnd)
     //  setup initial camera settings
     {
 #ifdef USE_TEST_SCENE
-        const XMVECTOR eyePos = XMVectorSet(0.f, 0.852f, 2.1f, 0.f);
+        const XMVECTOR eyePos = XMVectorSet(0.f, 0.752f, 2.8f, 0.f);
         const XMVECTOR lookDir = XMVectorSet(0.f, 0.35f, 0.f, 0.f);
 #else
-        const XMVECTOR eyePos = XMVectorSet(-4.4918f, 2.9941f, -1.3915f, 0.f);
+        const XMVECTOR eyePos = XMVectorSet(-4.4918f, 3.2016f, -1.3915f, 0.f);
         const XMVECTOR lookDir = XMVectorSet(-9.0900f, 0.8032f, 0.2913f, 0.f);
 #endif
         this->camera.LookAt(eyePos, lookDir);

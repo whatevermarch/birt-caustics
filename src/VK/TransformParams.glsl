@@ -8,10 +8,11 @@ struct TransformParams
     float farPlane;
 };
 
-mat4 constructProjMatrix(float invTanHalfFovH, float invTanHalfFovV, float fRange, float nearZ)
+mat4 constructProjMatrix(float invTanHalfFovH, float invTanHalfFovV, float nearZ, float farZ)
 {
+    const float fRange = farZ / (nearZ - farZ);
     return mat4(
-        invTanHalfFovV,  0, 0, 0, // col1
+        invTanHalfFovH,  0, 0, 0, // col1
 		0, invTanHalfFovV,  0, 0, // col2
 		0, 0, fRange         ,-1, // col3
 		0, 0, nearZ * fRange , 0  // col4
@@ -41,6 +42,12 @@ vec3 toViewCoord(vec2 screenCoord, float depth, float invTanHalfFovH, float invT
         projCoord.xy / vec2(invTanHalfFovH, invTanHalfFovV),
 		(projCoord.z - nearZ * fRange) / fRange
     );
+}
+
+vec3 toWorldCoord(vec2 screenCoord, float depth, mat4 view, float invTanHalfFovH, float invTanHalfFovV, float fRange, float nearZ)
+{
+    const vec3 viewCoord = toViewCoord(screenCoord, depth, invTanHalfFovH, invTanHalfFovV, fRange, nearZ).xyz;
+    return (inverse(view) * vec4(viewCoord, 1)).xyz;
 }
 
 //  transform projection depth value to view space value

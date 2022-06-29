@@ -6,13 +6,14 @@
 //	ToDo : let's experiment if 2 is sufficient.
 static const int backBufferCount = 3;
 static const uint32_t tonemappingMode = 5; // URQ
+static const float photonSampleScale = 2.9f; // 1.45 / 2 / 2.9
 
 //  Shadow map size (the texture dimension is shadowmapSize * shadowmapSize)
 #ifdef USE_TEST_SCENE
 static const uint32_t shadowmapSize = 512;
 static const float waterIOR = 2.4f;
 #else
-static const uint32_t shadowmapSize = 1024;
+static const uint32_t shadowmapSize = 2048;
 static const float waterIOR = 1.33f;
 #endif
 
@@ -117,15 +118,19 @@ void Renderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     //  caches mipmap (RSM)
     //
     {
+        // rsm depth
         this->cache_rsmDepthMipmap.OnCreate(this->pDevice,
             &this->resViewHeaps,
             &this->dBufferRing,
             &this->sBufferPool,
             VK_FORMAT_D32_SFLOAT_S8_UINT, true);
+
+        const int numMipmaps = static_cast<int>(std::log2(shadowmapSize)) - 1;
         this->cache_rsmDepthMipmap.OnCreateWindowSizeDependentResources(
             shadowmapSize, shadowmapSize, 
-            &this->cache_rsmDepth, static_cast<int>(std::log2(shadowmapSize)) - 1);
+            &this->cache_rsmDepth, min(numMipmaps, 2));
         
+        // gbuf depth
         this->cache_gbufDepthMipmap.OnCreate(this->pDevice,
             &this->resViewHeaps,
             &this->dBufferRing,
@@ -319,9 +324,11 @@ void Renderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint3
     //  init cache
     this->cache_gbufDepth.InitDepthStencil(this->pDevice, Width, Height, VK_FORMAT_D32_SFLOAT_S8_UINT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, "G-Buffer Depth Cache");
     this->cache_gbufDepth.CreateSRV(&this->cache_gbufDepthSRV);
+
+    const int numMipmaps = static_cast<int>(std::log2(Width > Height ? Height : Width)) - 1;
     this->cache_gbufDepthMipmap.OnCreateWindowSizeDependentResources(
         Width, Height, 
-        &this->cache_gbufDepth, static_cast<int>(std::log2(Width > Height ? Height : Width)) - 1);
+        &this->cache_gbufDepth, min(numMipmaps, 2));
 
     this->cache_opaque.InitRenderTarget(this->pDevice, Width, Height, VK_FORMAT_R16G16B16A16_SFLOAT, (VkSampleCountFlagBits)1, VK_IMAGE_USAGE_TRANSFER_DST_BIT, false, "Opaque-only ColorRT");
     this->cache_opaque.CreateSRV(&this->cache_opaqueSRV);
@@ -414,7 +421,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         }
     }
     // for tests and captures
-    // this->oceanIter = 15; 
+    this->oceanIter = 15; 
 
     //  preparing for a new frame
     this->dBufferRing.OnBeginFrame();
@@ -659,7 +666,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         causticsConstants.camera.invTanHalfFovV = XMVectorGetY(pCamera->GetProjection().r[1]);
         causticsConstants.camera.nearPlane = pCamera->GetNearPlane();
         causticsConstants.camera.farPlane = pCamera->GetFarPlane();
-        causticsConstants.samplingMapScale = 1.25f;
+        causticsConstants.samplingMapScale = photonSampleScale;
         causticsConstants.IOR = waterIOR;
         causticsConstants.rayThickness = 0.015f;
         causticsConstants.tMax = 100.f;

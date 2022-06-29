@@ -1,4 +1,4 @@
-const float SSRT_EPS = 1e-4;
+const float SSRT_EPS = 1e-12;
 
 // random function
 // ref : https://thebookofshaders.com/10/
@@ -324,9 +324,10 @@ bool traceOnView(
     //  traverse for the first occlusion
     bool bHit = false;
     vec2 startCoord = lastCoord;
-    int traverseLevel = 0;
+    int minTraverseLevel = 0;
     int maxTraverseLevel = 0; //bCamera ? textureQueryLevels(u_gbufDepth1N) : textureQueryLevels(u_rsmDepth1N); // ToDo : need fix!
-    while (traverseLevel >= 0)
+    int traverseLevel = minTraverseLevel;
+    while (traverseLevel >= minTraverseLevel)
     {
         const vec2 nextBasis = vec2(1) / (bCamera ? getGBufDepthSize(traverseLevel) : getRSMDepthSize(traverseLevel));
         const vec2 nextCoord = startCoord + unitMoveDir * (nextBasis.x < nextBasis.y ? nextBasis.x : nextBasis.y);
@@ -359,7 +360,7 @@ bool traceOnView(
 
                     continue;
                 }
-                else if(traverseLevel == 0) // occluded, and it's over
+                else if(traverseLevel == minTraverseLevel) // occluded, and it's over
                 {
                     //  perform linear intersection to find an exact hit point (represented by 't' value)
                     lastSampleDepth = bCamera ? fetchGBufDepth(lastCoord, 0) : fetchRSMDepth(lastCoord, 0);

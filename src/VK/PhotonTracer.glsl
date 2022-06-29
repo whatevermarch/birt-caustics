@@ -74,7 +74,7 @@ layout (binding = ID_GBufDepth_1toN) uniform sampler2D u_gbufDepth1N;
 float fetchGBufDepth(vec2 coord, int mipLevel)
 {
     return mipLevel == 0 ? texture(u_gbufDepth0, coord).r :
-        textureLod(u_gbufDepth1N, coord, float(mipLevel)).r;
+        textureLod(u_gbufDepth1N, coord, float(mipLevel - 1)).r;
 }
 ivec2 getGBufDepthSize(int mipLevel)
 {
@@ -98,6 +98,7 @@ layout (std140, binding = ID_HitPosIrradiance) buffer HitPositionAndPackedIrradi
 #include "ImageSpaceRT.h"
 
 const float epsilon = 1e-4;
+const float fluxAmplifier = 2.5f;
 
 vec2 sampleNoise()
 {
@@ -191,7 +192,7 @@ int retrieveSample(out vec3 origin, out vec3 direction, out vec3 power)
                                         u_params.lights[rsmLightIndex].invTanHalfFovH * u_params.lights[rsmLightIndex].invTanHalfFovV);
     power = fluxAlpha.xyz * pixelArea;
     // workaround: compensate the intensity, since PBR shader overpowers the intensity
-    power *= 10.f;
+    power *= u_params.samplingMapScale * u_params.samplingMapScale * fluxAmplifier;
 
     return 0;
 }
