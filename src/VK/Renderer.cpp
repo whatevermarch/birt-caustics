@@ -6,14 +6,14 @@
 //	ToDo : let's experiment if 2 is sufficient.
 static const int backBufferCount = 3;
 static const uint32_t tonemappingMode = 5; // URQ
-static const float photonSampleScale = 2.9f; // 1.45 / 2 / 2.9
+static const float photonSampleScale = 2.f; // 1.45 / 2 / 2.9
 
 //  Shadow map size (the texture dimension is shadowmapSize * shadowmapSize)
 #ifdef USE_TEST_SCENE
-static const uint32_t shadowmapSize = 512;
+static const uint32_t shadowmapSize = 1024;
 static const float waterIOR = 2.4f;
 #else
-static const uint32_t shadowmapSize = 2048;
+static const uint32_t shadowmapSize = 1024;
 static const float waterIOR = 1.33f;
 #endif
 
@@ -421,7 +421,7 @@ void Renderer::OnRender(SwapChain* pSwapChain, Camera* pCamera, Renderer::State*
         }
     }
     // for tests and captures
-    this->oceanIter = 15; 
+    //this->oceanIter = 15; 
 
     //  preparing for a new frame
     this->dBufferRing.OnBeginFrame();

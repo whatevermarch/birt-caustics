@@ -3,7 +3,7 @@
 #include <random>
 
 #define BLOCK_SIZE 16
-#define MAX_PHOTON_COUNT (1u << 22) // 2e20 ~ 1M
+#define MAX_PHOTON_COUNT (1u << 20) // 2e20 ~ 1M
 
 void Caustics::OnCreate(
 	Device* pDevice, 

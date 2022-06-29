@@ -43,7 +43,7 @@ layout (location = 1) out float out_valid;
 #include "TransformParams.glsl"
 
 const float EPS = 1e-4;
-const float IOR = 1.33; // water
+const float IOR = 2.4; // water
 const float depthBias = 70.0f / 100000.0f;
 
 float discardOccludedVertex(vec4 lightProjCoord)
@@ -186,7 +186,7 @@ void main()
 	if(out_valid > 0)
 	{
 		gl_Position = projPos_noDiv;
-		gl_PointSize = 64.0f; // manually adjusted
+		gl_PointSize = 52.0f; // manually adjusted
 	}
 	else
 	{

@@ -25,5 +25,5 @@ void main()
 	float alpha = 1 - r;
 	alpha *= alpha;
 
-	out_irradiance = vec4(in_pointColor.xyz * alpha * 0.05f * in_valid, 1);
+	out_irradiance = vec4(in_pointColor.xyz * alpha * 0.03f * in_valid, 1);
 }

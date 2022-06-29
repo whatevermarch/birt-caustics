@@ -16,9 +16,7 @@ const bool VALIDATION_ENABLED = false;
 #ifdef USE_TEST_SCENE
 // For CornellBox
 #define SCENE_PATH RESOURCES_PATH "CornellBox\\glTF\\test\\"
-#define SCENE_FILENAME "test_x1.gltf" 
-// change to "test_x4" for testing more precise Caustics Mapping.
-// DON'T FORGET!! to change the vertices count in CausticsMapping.cpp::Draw() accordingly.
+#define SCENE_FILENAME "test_x4.gltf"
 #else
 // For Sponza
 #define SCENE_PATH RESOURCES_PATH "Cauldron-Media\\Sponza\\glTF\\"
@@ -79,8 +77,8 @@ protected:
 void App::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight, bool* pbFullScreen)
 {
     //  set window extent
-    *pWidth = 1280;
-    *pHeight = 720;
+    /**pWidth = 1280;
+    *pHeight = 720;*/
     *pbFullScreen = false;
 }
 

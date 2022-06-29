@@ -98,7 +98,8 @@ layout (std140, binding = ID_HitPosIrradiance) buffer HitPositionAndPackedIrradi
 #include "ImageSpaceRT.h"
 
 const float epsilon = 1e-4;
-const float fluxAmplifier = 2.5f;
+//const float fluxAmplifier = 2.5f; // for cornell box
+const float fluxAmplifier = 7.f; // for sponza
 
 vec2 sampleNoise()
 {

@@ -292,7 +292,7 @@ void CausticsMapping::Draw(
 			// Draw
 			// workaround : there is totally 2500(x1)/9801(x2)/38809(x4) vertices for water surface. Geometry class doesn't store that value.
 			//
-			vkCmdDraw(commandBuffer, 2500 /*this->geometry.m_NumIndices*/, 1, 0, 0);
+			vkCmdDraw(commandBuffer, 38809 /*this->geometry.m_NumIndices*/, 1, 0, 0);
 		}
 
 		//	end render pass
